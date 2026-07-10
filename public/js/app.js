@@ -1163,7 +1163,7 @@ async function openUserManagement() {
 function showCreateUserForm() {
     const body = document.getElementById('userMgmtBody');
     body.innerHTML = `
-        <div style="max-width:500px;margin:0 auto">
+        <div style="max-width:500px;margin:12px">
             <h3 style="margin-bottom:20px">${I18n.t('admin.create_user')}</h3>
             <div class="form-group">
                 <label>${I18n.t('admin.username')}</label>

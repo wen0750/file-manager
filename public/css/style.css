@@ -1004,7 +1004,7 @@ input, select, textarea { font-family: inherit; font-size: inherit; }
 .user-table th, .user-table td {
     padding: 12px;
     text-align: left;
-    border-bottom: 1px solid var(--border);
+    /* border-bottom: 1px solid var(--border); */
 }
 
 .user-table th {

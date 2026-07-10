@@ -152,14 +152,14 @@
                         <i class="fas fa-home"></i>
                         <span data-i18n="files.my_files">My Files</span>
                     </a>
-                    <a onclick="showUploadModal()" class="nav-item">
+                    <!-- <a onclick="showUploadModal()" class="nav-item">
                         <i class="fas fa-cloud-upload-alt"></i>
                         <span data-i18n="files.upload">Upload</span>
                     </a>
                     <a onclick="createFolder()" class="nav-item">
                         <i class="fas fa-folder-plus"></i>
                         <span data-i18n="files.new_folder">New Folder</span>
-                    </a>
+                    </a> -->
                 </nav>
 
                 <div class="sidebar-section" id="adminSection" style="display:none">
@@ -364,12 +364,12 @@
 
     <!-- User Management Modal -->
     <div class="modal-overlay modal-fullscreen" id="userMgmtModal" style="display:none">
-        <div class="modal modal-full">
+        <div class="modal modal-full" style="min-width: 260px;max-width: 800px;">
             <div class="modal-header">
                 <h2><i class="fas fa-users"></i> <span data-i18n="admin.user_management">User Management</span></h2>
                 <button class="modal-close" onclick="closeModal('userMgmtModal')"><i class="fas fa-times"></i></button>
             </div>
-            <div class="modal-body modal-body-full" id="userMgmtBody"></div>
+            <div class="modal-body modal-body-full" id="userMgmtBody" style="padding: 8px;"></div>
         </div>
     </div>
 

@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  file-manager:
+    build: .
+    container_name: file-manager
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - SESSION_SECRET=${SESSION_SECRET:-change-this-to-a-random-secret-string-at-least-32-chars}
+      - DB_PATH=/app/data/database.db
+      - UPLOAD_DIR=/app/data/uploads
+      - MAX_FILE_SIZE=${MAX_FILE_SIZE:-2147483648}
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}
+      - DEFAULT_QUOTA=${DEFAULT_QUOTA:-10737418240}
+    volumes:
+      - file-manager-data:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/api/auth/me', (r) => process.exit(r.statusCode < 500 ? 0 : 1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  file-manager-data:
+    driver: local

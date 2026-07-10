@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File Manager</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/material-darker.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/display/fullscreen.min.css">
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+    <!-- Login Page -->
+    <div id="loginPage" class="auth-page">
+        <div class="auth-card">
+            <div class="auth-header">
+                <i class="fas fa-folder-open"></i>
+                <h1 data-i18n="app.title">File Manager</h1>
+            </div>
+            <form id="loginForm" class="auth-form">
+                <div class="form-group">
+                    <label data-i18n="auth.username">Username</label>
+                    <input type="text" id="loginUsername" required autocomplete="username">
+                </div>
+                <div class="form-group">
+                    <label data-i18n="auth.password">Password</label>
+                    <div class="password-input">
+                        <input type="password" id="loginPassword" required autocomplete="current-password">
+                        <button type="button" class="toggle-password" onclick="togglePassword('loginPassword', this)">
+                            <i class="fas fa-eye"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="form-error" id="loginError"></div>
+                <button type="submit" class="btn btn-primary btn-block" data-i18n="auth.login">Login</button>
+            </form>
+            <div class="auth-switch" id="registerLink" style="display:none">
+                <span data-i18n="auth.no_account">Don't have an account?</span>
+                <a href="#" onclick="showRegisterForm(); return false;" data-i18n="auth.register">Register</a>
+            </div>
+
+            <!-- Register Form -->
+            <form id="registerForm" class="auth-form" style="display:none">
+                <div class="auth-header" style="margin-bottom:16px">
+                    <h2 data-i18n="auth.register_title">Create Account</h2>
+                </div>
+                <div class="form-group">
+                    <label data-i18n="auth.username">Username</label>
+                    <input type="text" id="registerUsername" required autocomplete="username">
+                </div>
+                <div class="form-group">
+                    <label data-i18n="auth.email">Email</label>
+                    <input type="email" id="registerEmail" autocomplete="email">
+                </div>
+                <div class="form-group">
+                    <label data-i18n="auth.password">Password</label>
+                    <div class="password-input">
+                        <input type="password" id="registerPassword" required autocomplete="new-password">
+                        <button type="button" class="toggle-password" onclick="togglePassword('registerPassword', this)">
+                            <i class="fas fa-eye"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label data-i18n="auth.confirm_password">Confirm Password</label>
+                    <div class="password-input">
+                        <input type="password" id="registerConfirmPassword" required autocomplete="new-password">
+                        <button type="button" class="toggle-password" onclick="togglePassword('registerConfirmPassword', this)">
+                            <i class="fas fa-eye"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="form-error" id="registerError"></div>
+                <button type="submit" class="btn btn-primary btn-block" data-i18n="auth.register">Register</button>
+            </form>
+            <div class="auth-switch" id="loginLink" style="display:none">
+                <span data-i18n="auth.have_account">Already have an account?</span>
+                <a href="#" onclick="showLoginForm(); return false;" data-i18n="auth.login">Login</a>
+            </div>
+
+            <div class="auth-footer">
+                <select id="loginLanguage" onchange="changeLanguage(this.value)">
+                    <option value="en">English</option>
+                    <option value="zh-CN">简体中文</option>
+                    <option value="zh-HK">繁體中文</option>
+                </select>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main App -->
+    <div id="appPage" class="app-page" style="display:none">
+        <!-- Top Navigation -->
+        <nav class="navbar">
+            <div class="navbar-left">
+                <button class="btn-icon sidebar-toggle" onclick="toggleSidebar()">
+                    <i class="fas fa-bars"></i>
+                </button>
+                <a href="/" class="navbar-brand">
+                    <i class="fas fa-folder-open"></i>
+                    <span id="appName">File Manager</span>
+                </a>
+            </div>
+            <div class="navbar-center">
+                <div class="search-box">
+                    <i class="fas fa-search"></i>
+                    <input type="text" id="searchInput" data-i18n-placeholder="files.search_placeholder" placeholder="Search files and folders...">
+                    <button class="btn-icon" onclick="clearSearch()" id="searchClearBtn" style="display:none">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="navbar-right">
+                <select id="appLanguage" onchange="changeLanguage(this.value)" class="lang-select">
+                    <option value="en">EN</option>
+                    <option value="zh-CN">中文</option>
+                    <option value="zh-HK">繁中</option>
+                </select>
+                <div class="user-menu">
+                    <button class="user-menu-btn" onclick="toggleUserMenu()">
+                        <i class="fas fa-user-circle"></i>
+                        <span id="navUsername"></span>
+                        <i class="fas fa-chevron-down"></i>
+                    </button>
+                    <div class="dropdown-menu" id="userDropdown">
+                        <a onclick="openSettings()"><i class="fas fa-cog"></i> <span data-i18n="settings.title">Settings</span></a>
+                        <a onclick="openChangePassword()"><i class="fas fa-key"></i> <span data-i18n="auth.change_password">Change Password</span></a>
+                        <div class="dropdown-divider"></div>
+                        <a onclick="logout()" class="logout-link"><i class="fas fa-sign-out-alt"></i> <span data-i18n="auth.logout">Logout</span></a>
+                    </div>
+                </div>
+            </div>
+        </nav>
+
+        <div class="main-layout">
+            <!-- Sidebar -->
+            <aside class="sidebar" id="sidebar">
+                <div class="quota-widget" id="quotaWidget">
+                    <div class="quota-header">
+                        <span data-i18n="files.storage">Storage</span>
+                        <span id="quotaPercentage">0%</span>
+                    </div>
+                    <div class="quota-bar">
+                        <div class="quota-fill" id="quotaFill" style="width:0%"></div>
+                    </div>
+                    <div class="quota-text" id="quotaText">0 B / 0 B</div>
+                </div>
+
+                <nav class="sidebar-nav">
+                    <a onclick="navigateTo(null)" class="nav-item active" id="navHome">
+                        <i class="fas fa-home"></i>
+                        <span data-i18n="files.my_files">My Files</span>
+                    </a>
+                    <a onclick="showUploadModal()" class="nav-item">
+                        <i class="fas fa-cloud-upload-alt"></i>
+                        <span data-i18n="files.upload">Upload</span>
+                    </a>
+                    <a onclick="createFolder()" class="nav-item">
+                        <i class="fas fa-folder-plus"></i>
+                        <span data-i18n="files.new_folder">New Folder</span>
+                    </a>
+                </nav>
+
+                <div class="sidebar-section" id="adminSection" style="display:none">
+                    <h3 data-i18n="admin.title">Administration</h3>
+                    <nav class="sidebar-nav">
+                        <a onclick="openUserManagement()" class="nav-item">
+                            <i class="fas fa-users"></i>
+                            <span data-i18n="admin.users">Users</span>
+                        </a>
+                        <a onclick="openSettings()" class="nav-item">
+                            <i class="fas fa-cog"></i>
+                            <span data-i18n="settings.title">Settings</span>
+                        </a>
+                    </nav>
+                </div>
+            </aside>
+
+            <!-- Main Content -->
+            <main class="content-area" id="contentArea">
+                <!-- Breadcrumbs -->
+                <div class="breadcrumbs" id="breadcrumbs">
+                    <a onclick="navigateTo(null)" data-i18n="files.my_files">My Files</a>
+                </div>
+
+                <!-- Toolbar -->
+                <div class="toolbar">
+                    <div class="toolbar-left">
+                        <button class="btn btn-sm btn-outline" onclick="showUploadModal()">
+                            <i class="fas fa-upload"></i> <span data-i18n="files.upload">Upload</span>
+                        </button>
+                        <button class="btn btn-sm btn-outline" onclick="createFolder()">
+                            <i class="fas fa-folder-plus"></i> <span data-i18n="files.new_folder">New Folder</span>
+                        </button>
+                        <div class="batch-actions" id="batchActions" style="display:none">
+                            <button class="btn btn-sm btn-outline" onclick="batchDownload()">
+                                <i class="fas fa-download"></i> <span data-i18n="files.download">Download</span>
+                            </button>
+                            <button class="btn btn-sm btn-outline" onclick="showMoveCopyModal('move')">
+                                <i class="fas fa-cut"></i> <span data-i18n="files.move">Move</span>
+                            </button>
+                            <button class="btn btn-sm btn-outline" onclick="showMoveCopyModal('copy')">
+                                <i class="fas fa-copy"></i> <span data-i18n="files.copy">Copy</span>
+                            </button>
+                            <button class="btn btn-sm btn-danger-outline" onclick="batchDelete()">
+                                <i class="fas fa-trash"></i> <span data-i18n="files.delete">Delete</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="toolbar-right">
+                        <span class="selected-count" id="selectedCount"></span>
+                        <button class="btn-icon" onclick="toggleSelectAll()" title="Select All">
+                            <i class="fas fa-check-square"></i>
+                        </button>
+                        <div class="view-toggle">
+                            <button class="view-btn active" id="gridViewBtn" onclick="setView('grid')">
+                                <i class="fas fa-th"></i>
+                            </button>
+                            <button class="view-btn" id="listViewBtn" onclick="setView('list')">
+                                <i class="fas fa-list"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- File Grid/List -->
+                <div class="file-container" id="fileContainer">
+                    <div class="file-grid" id="fileGrid"></div>
+                    <div class="file-list" id="fileList" style="display:none">
+                        <div class="file-list-header">
+                            <div class="fl-col fl-name" data-i18n="files.name">Name</div>
+                            <div class="fl-col fl-size" data-i18n="files.size">Size</div>
+                            <div class="fl-col fl-date" data-i18n="files.modified">Modified</div>
+                            <div class="fl-col fl-actions"></div>
+                        </div>
+                        <div class="file-list-body" id="fileListBody"></div>
+                    </div>
+                    <div class="empty-state" id="emptyState" style="display:none">
+                        <i class="fas fa-folder-open"></i>
+                        <p data-i18n="files.empty">This folder is empty</p>
+                        <button class="btn btn-primary" onclick="showUploadModal()">
+                            <i class="fas fa-upload"></i> <span data-i18n="files.upload_first">Upload your first file</span>
+                        </button>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <!-- Upload Modal -->
+    <div class="modal-overlay" id="uploadModal" style="display:none">
+        <div class="modal">
+            <div class="modal-header">
+                <h2><i class="fas fa-cloud-upload-alt"></i> <span data-i18n="files.upload_files">Upload Files</span></h2>
+                <button class="modal-close" onclick="closeModal('uploadModal')"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="modal-body">
+                <div id="dropzone" class="dropzone">
+                    <i class="fas fa-cloud-upload-alt dropzone-icon"></i>
+                    <p data-i18n="files.drag_drop">Drag & drop files here or click to browse</p>
+                    <input type="file" id="fileInput" multiple style="display:none">
+                    <div class="upload-list" id="uploadList"></div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" onclick="closeModal('uploadModal')" data-i18n="common.cancel">Cancel</button>
+                <button class="btn btn-primary" onclick="startUpload()" id="uploadBtn" data-i18n="files.upload">Upload</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Editor Modal -->
+    <div class="modal-overlay modal-fullscreen" id="editorModal" style="display:none">
+        <div class="modal modal-full">
+            <div class="modal-header">
+                <h2><i class="fas fa-code"></i> <span id="editorFilename"></span></h2>
+                <div class="editor-actions">
+                    <span class="editor-status" id="editorStatus"></span>
+                    <button class="btn btn-sm btn-primary" onclick="saveFileContent()">
+                        <i class="fas fa-save"></i> <span data-i18n="common.save">Save</span>
+                    </button>
+                    <button class="modal-close" onclick="closeModal('editorModal')"><i class="fas fa-times"></i></button>
+                </div>
+            </div>
+            <div class="modal-body modal-body-full">
+                <textarea id="codeEditor"></textarea>
+            </div>
+        </div>
+    </div>
+
+    <!-- Preview Modal -->
+    <div class="modal-overlay modal-fullscreen" id="previewModal" style="display:none">
+        <div class="modal modal-full">
+            <div class="modal-header">
+                <h2><i class="fas fa-eye"></i> <span id="previewFilename"></span></h2>
+                <button class="modal-close" onclick="closeModal('previewModal')"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="modal-body modal-body-full preview-body" id="previewBody"></div>
+        </div>
+    </div>
+
+    <!-- File Info Modal -->
+    <div class="modal-overlay" id="infoModal" style="display:none">
+        <div class="modal">
+            <div class="modal-header">
+                <h2><i class="fas fa-info-circle"></i> <span data-i18n="files.file_info">File Info</span></h2>
+                <button class="modal-close" onclick="closeModal('infoModal')"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="modal-body" id="infoModalBody"></div>
+        </div>
+    </div>
+
+    <!-- Move/Copy Modal -->
+    <div class="modal-overlay" id="moveCopyModal" style="display:none">
+        <div class="modal">
+            <div class="modal-header">
+                <h2 id="moveCopyTitle"><i class="fas fa-folder"></i> <span data-i18n="files.select_folder">Select Folder</span></h2>
+                <button class="modal-close" onclick="closeModal('moveCopyModal')"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="modal-body">
+                <div class="folder-tree" id="folderTree"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" onclick="closeModal('moveCopyModal')" data-i18n="common.cancel">Cancel</button>
+                <button class="btn btn-primary" onclick="confirmMoveCopy()" id="moveCopyConfirm" data-i18n="common.confirm">Confirm</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Rename Modal -->
+    <div class="modal-overlay" id="renameModal" style="display:none">
+        <div class="modal modal-sm">
+            <div class="modal-header">
+                <h2><i class="fas fa-i-cursor"></i> <span data-i18n="files.rename">Rename</span></h2>
+                <button class="modal-close" onclick="closeModal('renameModal')"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label data-i18n="files.new_name">New Name</label>
+                    <input type="text" id="renameInput" onkeydown="if(event.key==='Enter')confirmRename()">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" onclick="closeModal('renameModal')" data-i18n="common.cancel">Cancel</button>
+                <button class="btn btn-primary" onclick="confirmRename()" data-i18n="common.save">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div class="modal-overlay" id="settingsModal" style="display:none">
+        <div class="modal">
+            <div class="modal-header">
+                <h2><i class="fas fa-cog"></i> <span data-i18n="settings.title">Settings</span></h2>
+                <button class="modal-close" onclick="closeModal('settingsModal')"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="modal-body" id="settingsModalBody"></div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" onclick="saveSettings()" data-i18n="common.save">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- User Management Modal -->
+    <div class="modal-overlay modal-fullscreen" id="userMgmtModal" style="display:none">
+        <div class="modal modal-full">
+            <div class="modal-header">
+                <h2><i class="fas fa-users"></i> <span data-i18n="admin.user_management">User Management</span></h2>
+                <button class="modal-close" onclick="closeModal('userMgmtModal')"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="modal-body modal-body-full" id="userMgmtBody"></div>
+        </div>
+    </div>
+
+    <!-- Change Password Modal -->
+    <div class="modal-overlay" id="passwordModal" style="display:none">
+        <div class="modal modal-sm">
+            <div class="modal-header">
+                <h2><i class="fas fa-key"></i> <span data-i18n="auth.change_password">Change Password</span></h2>
+                <button class="modal-close" onclick="closeModal('passwordModal')"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label data-i18n="auth.current_password">Current Password</label>
+                    <input type="password" id="currentPassword">
+                </div>
+                <div class="form-group">
+                    <label data-i18n="auth.new_password">New Password</label>
+                    <input type="password" id="newPassword">
+                </div>
+                <div class="form-group">
+                    <label data-i18n="auth.confirm_password">Confirm Password</label>
+                    <input type="password" id="confirmPassword">
+                </div>
+                <div class="form-error" id="passwordError"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" onclick="closeModal('passwordModal')" data-i18n="common.cancel">Cancel</button>
+                <button class="btn btn-primary" onclick="changePassword()" data-i18n="common.save">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Notifications -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loadingOverlay" style="display:none">
+        <div class="spinner"></div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/css/css.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/javascript/javascript.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/htmlmixed/htmlmixed.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/xml/xml.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/markdown/markdown.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/python/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/php/php.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/sql/sql.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/shell/shell.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/yaml/yaml.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/properties/properties.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/clike/clike.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/closebrackets.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/matchbrackets.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/display/fullscreen.min.js"></script>
+    <script src="/js/i18n.js"></script>
+    <script src="/js/api.js"></script>
+    <script src="/js/app.js"></script>
+</body>
+</html>

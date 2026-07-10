@@ -41,6 +41,7 @@ ADMIN_USERNAME=admin
 ADMIN_PASSWORD=your-secure-password
 DEFAULT_QUOTA=10737418240
 MAX_FILE_SIZE=2147483648
+ALLOW_FILESYSTEM_SCAN_FOR_MISSING_DB_FILES=false
 ```
 
 Then run:
@@ -70,6 +71,31 @@ npm run dev
 ```
 
 Access at `http://localhost:3000`
+
+## Filesystem Scan For Missing DB Files
+
+You can enable a filesystem scan mode to show files that exist on disk even when
+they do not have a matching record in the database table.
+
+Add this to your `.env` file:
+
+```env
+ALLOW_FILESYSTEM_SCAN_FOR_MISSING_DB_FILES=true
+```
+
+Behavior:
+
+- `false` — Only files stored in the database table are shown in the file list
+- `true` — The file list includes database files plus files found on disk that are missing from the database
+
+Recommended behavior for filesystem-only files:
+
+- Mark them with metadata such as `inDatabase: false`
+- Set a source flag such as `source: "filesystem"`
+- Show them in the UI/API response without automatically inserting them into the database
+
+This mode is useful when files were copied directly into the storage directory,
+restored from backup, or created outside the normal upload flow.
 
 ## Default Credentials
 

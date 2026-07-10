@@ -14,6 +14,7 @@ const {
     formatBytes
 } = require('../utils/helpers');
 const { updateUsedStorage } = require('../middleware/quota');
+const { mergeFilesystemOnlyFiles } = require('./filesystem-scan.service');
 
 const uploadDir = path.resolve(process.env.UPLOAD_DIR || './data/uploads');
 
@@ -233,11 +234,17 @@ async function listItems(userId, folderId = null) {
         breadcrumbs = await getBreadcrumbs(targetFolderId);
     }
 
+    const mergedFiles = await mergeFilesystemOnlyFiles(
+        files || [],
+        currentFolder?.path || uploadDir,
+        targetFolderId || null
+    );
+
     return {
         currentFolder,
         breadcrumbs,
         folders: folders || [],
-        files: files || []
+        files: mergedFiles
     };
 }
 

@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "init-db": "node src/db/init.js"
+    "init-db": "node src/db/init.js",
+    "create-admin": "node src/db/create-admin.js",
+    "test": "node --check src/server.js && node --check src/db/init.js && node --check src/db/database.js"
   },
   "keywords": [
     "file-manager",
@@ -36,6 +38,6 @@
     "uuid": "^10.0.0"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=18.17.0"
   }
 }

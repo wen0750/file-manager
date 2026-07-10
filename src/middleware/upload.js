@@ -5,7 +5,7 @@ const { v4: uuidv4 } = require('uuid');
 const { sanitizeFilename, getExtension } = require('../utils/helpers');
 
 const uploadDir = path.resolve(process.env.UPLOAD_DIR || './data/uploads');
-const maxFileSize = parseInt(process.env.MAX_FILE_SIZE || '2147483648');
+const maxFileSize = parseInt(process.env.MAX_FILE_SIZE || '2147483648', 10);
 
 // Ensure upload directory exists
 if (!fs.existsSync(uploadDir)) {
@@ -39,28 +39,30 @@ const storage = multer.diskStorage({
 
 /**
  * File filter to validate uploads.
+ * Uses async IIFE because getSetting is now async.
  */
 function fileFilter(req, file, cb) {
-    // Check allowed extensions if configured
-    const { getSetting } = require('../db/database');
-    const allowedExts = getSetting('allowed_extensions', '');
+    (async () => {
+        const { getSetting } = require('../db/database');
+        const allowedExts = await getSetting('allowed_extensions', '');
 
-    if (allowedExts) {
-        const exts = allowedExts.split(',').map(e => e.trim().toLowerCase());
-        const fileExt = getExtension(file.originalname);
-        if (!exts.includes(fileExt)) {
-            return cb(new Error(`File type ${fileExt} is not allowed`), false);
+        if (allowedExts) {
+            const exts = allowedExts.split(',').map(e => e.trim().toLowerCase());
+            const fileExt = getExtension(file.originalname);
+            if (!exts.includes(fileExt)) {
+                return cb(new Error(`File type ${fileExt} is not allowed`), false);
+            }
         }
-    }
 
-    // Block executable files for security
-    const blockedExts = ['.exe', '.bat', '.cmd', '.sh', '.ps1', '.com', '.scr', '.vbs', '.msi'];
-    const fileExt = getExtension(file.originalname);
-    if (blockedExts.includes(fileExt)) {
-        return cb(new Error(`File type ${fileExt} is blocked for security`), false);
-    }
+        // Block executable files for security
+        const blockedExts = ['.exe', '.bat', '.cmd', '.sh', '.ps1', '.com', '.scr', '.vbs', '.msi'];
+        const fileExt = getExtension(file.originalname);
+        if (blockedExts.includes(fileExt)) {
+            return cb(new Error(`File type ${fileExt} is blocked for security`), false);
+        }
 
-    cb(null, true);
+        cb(null, true);
+    })().catch(err => cb(err));
 }
 
 const upload = multer({

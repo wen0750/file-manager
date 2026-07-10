@@ -1,6 +1,23 @@
 version: '3.8'
 
 services:
+  mysql:
+    image: mysql:8.0
+    container_name: file-manager-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-filemanager123}
+      MYSQL_DATABASE: ${DB_NAME:-file_manager}
+    volumes:
+      - mysql-data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   file-manager:
     build: .
     container_name: file-manager
@@ -11,7 +28,11 @@ services:
       - NODE_ENV=production
       - PORT=3000
       - SESSION_SECRET=${SESSION_SECRET:-change-this-to-a-random-secret-string-at-least-32-chars}
-      - DB_PATH=/app/data/database.db
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_USER=root
+      - DB_PASSWORD=${DB_PASSWORD:-filemanager123}
+      - DB_NAME=${DB_NAME:-file_manager}
       - UPLOAD_DIR=/app/data/uploads
       - MAX_FILE_SIZE=${MAX_FILE_SIZE:-2147483648}
       - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
@@ -19,6 +40,9 @@ services:
       - DEFAULT_QUOTA=${DEFAULT_QUOTA:-10737418240}
     volumes:
       - file-manager-data:/app/data
+    depends_on:
+      mysql:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/api/auth/me', (r) => process.exit(r.statusCode < 500 ? 0 : 1))"]
       interval: 30s
@@ -28,4 +52,6 @@ services:
 
 volumes:
   file-manager-data:
+    driver: local
+  mysql-data:
     driver: local

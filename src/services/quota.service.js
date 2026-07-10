@@ -3,10 +3,17 @@ const { getDirectorySize } = require('../utils/helpers');
 
 /**
  * Get user's quota info.
+ *
+ * @param {number} userId - User ID
+ * @returns {Promise<object|null>} Quota info object
  */
-function getQuotaInfo(userId) {
+async function getQuotaInfo(userId) {
     const db = getDatabase();
-    const user = db.prepare('SELECT quota_bytes, used_bytes FROM users WHERE id = ?').get(userId);
+    const [rows] = await db.execute(
+        'SELECT quota_bytes, used_bytes FROM users WHERE id = ?',
+        [userId]
+    );
+    const user = rows[0];
     if (!user) return null;
 
     return {
@@ -19,29 +26,49 @@ function getQuotaInfo(userId) {
 
 /**
  * Recalculate user's used storage.
+ *
+ * @param {number} userId - User ID
+ * @returns {Promise<number>} Used storage in bytes
  */
-function recalculateStorage(userId) {
+async function recalculateStorage(userId) {
     return updateUsedStorage(userId);
 }
 
 /**
  * Set user quota.
+ *
+ * @param {number} userId - User ID
+ * @param {number} quotaBytes - New quota in bytes
+ * @returns {Promise<object>} Updated quota info
  */
-function setQuota(userId, quotaBytes) {
+async function setQuota(userId, quotaBytes) {
     const db = getDatabase();
-    db.prepare('UPDATE users SET quota_bytes = ?, updated_at = datetime(\'now\') WHERE id = ?').run(quotaBytes, userId);
+    await db.execute(
+        'UPDATE users SET quota_bytes = ?, updated_at = NOW() WHERE id = ?',
+        [quotaBytes, userId]
+    );
     return getQuotaInfo(userId);
 }
 
-function updateUsedStorage(userId) {
+/**
+ * Update user's used storage by scanning the filesystem.
+ *
+ * @param {number} userId - User ID
+ * @returns {Promise<number>} Used storage in bytes
+ */
+async function updateUsedStorage(userId) {
     const db = getDatabase();
-    const folder = db.prepare('SELECT path FROM folders WHERE owner_id = ? AND parent_id IS NULL').get(userId);
+    const [rows] = await db.execute(
+        'SELECT path FROM folders WHERE owner_id = ? AND parent_id IS NULL',
+        [userId]
+    );
+    const folder = rows[0];
     if (!folder) {
-        db.prepare('UPDATE users SET used_bytes = 0 WHERE id = ?').run(userId);
+        await db.execute('UPDATE users SET used_bytes = 0 WHERE id = ?', [userId]);
         return 0;
     }
     const size = getDirectorySize(folder.path);
-    db.prepare('UPDATE users SET used_bytes = ? WHERE id = ?').run(size, userId);
+    await db.execute('UPDATE users SET used_bytes = ? WHERE id = ?', [size, userId]);
     return size;
 }
 

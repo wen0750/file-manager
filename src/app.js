@@ -12,16 +12,13 @@ const { csrfProtection, csrfToken } = require('./middleware/csrf');
 
 const app = express();
 
-// Ensure data directories exist
+// Ensure upload directory exists
 const uploadDir = path.resolve(process.env.UPLOAD_DIR || './data/uploads');
-const dbPath = path.resolve(process.env.DB_PATH || './data/database.db');
-for (const dir of [path.dirname(dbPath), uploadDir]) {
-    if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
+if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
 }
 
-// Initialize database
+// Initialize database pool (creates the MySQL connection pool)
 getDatabase();
 
 // Security headers

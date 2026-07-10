@@ -1,68 +1,100 @@
-const Database = require('better-sqlite3');
-const path = require('path');
+const mysql = require('mysql2/promise');
 const fs = require('fs');
+const path = require('path');
 
-let db = null;
+let pool = null;
 
 /**
- * Initialize and return the database connection.
- * Creates the data directory and runs schema if needed.
+ * Create and return the MySQL connection pool.
+ * Subsequent calls return the cached pool instance.
+ *
+ * @returns {mysql.Pool} The MySQL connection pool
  */
-function getDatabase() {
-    if (db) return db;
+function getPool() {
+    if (pool) return pool;
 
-    const dbPath = path.resolve(process.env.DB_PATH || './data/database.db');
-    const dbDir = path.dirname(dbPath);
+    pool = mysql.createPool({
+        host: process.env.DB_HOST || 'localhost',
+        port: parseInt(process.env.DB_PORT || '3306', 10),
+        user: process.env.DB_USER || 'root',
+        password: process.env.DB_PASSWORD || '',
+        database: process.env.DB_NAME || 'file_manager',
+        waitForConnections: true,
+        connectionLimit: 10,
+        queueLimit: 0,
+        charset: 'utf8mb4',
+        multipleStatements: true,
+        dateStrings: true
+    });
 
-    if (!fs.existsSync(dbDir)) {
-        fs.mkdirSync(dbDir, { recursive: true });
-    }
-
-    db = new Database(dbPath);
-    db.pragma('journal_mode = WAL');
-    db.pragma('foreign_keys = ON');
-
-    // Run schema
-    const schemaPath = path.join(__dirname, 'schema.sql');
-    const schema = fs.readFileSync(schemaPath, 'utf8');
-    db.exec(schema);
-
-    return db;
+    return pool;
 }
 
 /**
- * Close the database connection.
+ * Backward-compatible alias — returns the pool.
+ * @returns {mysql.Pool}
  */
-function closeDatabase() {
-    if (db) {
-        db.close();
-        db = null;
+function getDatabase() {
+    return getPool();
+}
+
+/**
+ * Close the database connection pool.
+ */
+async function closeDatabase() {
+    if (pool) {
+        await pool.end();
+        pool = null;
     }
+}
+
+/**
+ * Execute the MySQL schema file to create tables and indexes.
+ * Should be called once during application startup.
+ */
+async function initSchema() {
+    const db = getPool();
+    const schemaPath = path.join(__dirname, 'schema-mysql.sql');
+    const schema = fs.readFileSync(schemaPath, 'utf8');
+    await db.query(schema);
 }
 
 /**
  * Get a setting value by key.
+ *
+ * @param {string} key - Setting key
+ * @param {*} defaultValue - Value to return if key not found
+ * @returns {Promise<string|null>} The setting value or defaultValue
  */
-function getSetting(key, defaultValue = null) {
-    const database = getDatabase();
-    const row = database.prepare('SELECT value FROM settings WHERE key = ?').get(key);
-    return row ? row.value : defaultValue;
+async function getSetting(key, defaultValue = null) {
+    const db = getPool();
+    const [rows] = await db.execute(
+        'SELECT value FROM settings WHERE `key` = ?',
+        [key]
+    );
+    return rows.length > 0 ? rows[0].value : defaultValue;
 }
 
 /**
- * Set a setting value.
+ * Set a setting value (insert or update).
+ *
+ * @param {string} key - Setting key
+ * @param {string} value - Setting value
  */
-function setSetting(key, value) {
-    const database = getDatabase();
-    database.prepare(
-        `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`
-    ).run(key, value);
+async function setSetting(key, value) {
+    const db = getPool();
+    await db.execute(
+        'INSERT INTO settings (`key`, value, updated_at) VALUES (?, ?, NOW()) ' +
+        'ON DUPLICATE KEY UPDATE value = VALUES(value), updated_at = NOW()',
+        [key, value]
+    );
 }
 
 module.exports = {
+    getPool,
     getDatabase,
     closeDatabase,
+    initSchema,
     getSetting,
     setSetting
 };

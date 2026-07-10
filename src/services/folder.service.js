@@ -8,22 +8,29 @@ const uploadDir = path.resolve(process.env.UPLOAD_DIR || './data/uploads');
 
 /**
  * Get or create user's root folder.
+ *
+ * @param {number} userId - User ID
+ * @returns {Promise<object>} Root folder object
  */
-function getRootFolder(userId) {
+async function getRootFolder(userId) {
     const db = getDatabase();
-    let rootFolder = db.prepare(
-        'SELECT * FROM folders WHERE owner_id = ? AND parent_id IS NULL'
-    ).get(userId);
+    const [rows] = await db.execute(
+        'SELECT * FROM folders WHERE owner_id = ? AND parent_id IS NULL',
+        [userId]
+    );
+    let rootFolder = rows[0];
 
     if (!rootFolder) {
         const folderPath = path.join(uploadDir, String(userId));
         if (!fs.existsSync(folderPath)) {
             fs.mkdirSync(folderPath, { recursive: true });
         }
-        const result = db.prepare(
-            `INSERT INTO folders (name, parent_id, owner_id, path) VALUES ('root', NULL, ?, ?)`
-        ).run(userId, folderPath);
-        rootFolder = db.prepare('SELECT * FROM folders WHERE id = ?').get(result.lastInsertRowid);
+        const [result] = await db.execute(
+            `INSERT INTO folders (name, parent_id, owner_id, path) VALUES ('root', NULL, ?, ?)`,
+            [userId, folderPath]
+        );
+        const [newRows] = await db.execute('SELECT * FROM folders WHERE id = ?', [result.insertId]);
+        rootFolder = newRows[0];
     }
 
     return rootFolder;
@@ -31,8 +38,13 @@ function getRootFolder(userId) {
 
 /**
  * Create a new folder.
+ *
+ * @param {string} name - Folder name
+ * @param {number|null} parentId - Parent folder ID
+ * @param {number} userId - Owner user ID
+ * @returns {Promise<object>} Created folder object
  */
-function createFolder(name, parentId, userId) {
+async function createFolder(name, parentId, userId) {
     const db = getDatabase();
 
     const safeName = sanitizeFilename(name);
@@ -41,10 +53,11 @@ function createFolder(name, parentId, userId) {
     // Get parent folder
     let parentFolder;
     if (parentId) {
-        parentFolder = db.prepare('SELECT * FROM folders WHERE id = ?').get(parentId);
+        const [rows] = await db.execute('SELECT * FROM folders WHERE id = ?', [parentId]);
+        parentFolder = rows[0];
         if (!parentFolder) throw new Error('Parent folder not found');
     } else {
-        parentFolder = getRootFolder(userId);
+        parentFolder = await getRootFolder(userId);
     }
 
     // Create physical directory
@@ -53,19 +66,30 @@ function createFolder(name, parentId, userId) {
     fs.mkdirSync(newDirPath, { recursive: true });
 
     // Create database record
-    const result = db.prepare(
-        `INSERT INTO folders (name, parent_id, owner_id, path) VALUES (?, ?, ?, ?)`
-    ).run(safeName, parentFolder.id, userId, newDirPath);
+    const [result] = await db.execute(
+        `INSERT INTO folders (name, parent_id, owner_id, path) VALUES (?, ?, ?, ?)`,
+        [safeName, parentFolder.id, userId, newDirPath]
+    );
 
-    return db.prepare('SELECT * FROM folders WHERE id = ?').get(result.lastInsertRowid);
+    const [newRows] = await db.execute('SELECT * FROM folders WHERE id = ?', [result.insertId]);
+    return newRows[0];
 }
 
 /**
  * Rename a folder.
+ *
+ * @param {number} folderId - Folder ID
+ * @param {string} newName - New folder name
+ * @param {number} userId - Owner user ID
+ * @returns {Promise<boolean>} True on success
  */
-function renameFolder(folderId, newName, userId) {
+async function renameFolder(folderId, newName, userId) {
     const db = getDatabase();
-    const folder = db.prepare('SELECT * FROM folders WHERE id = ? AND owner_id = ?').get(folderId, userId);
+    const [rows] = await db.execute(
+        'SELECT * FROM folders WHERE id = ? AND owner_id = ?',
+        [folderId, userId]
+    );
+    const folder = rows[0];
     if (!folder) throw new Error('Folder not found');
     if (folder.parent_id === null) throw new Error('Cannot rename root folder');
 
@@ -78,19 +102,28 @@ function renameFolder(folderId, newName, userId) {
     if (fs.existsSync(newPath)) throw new Error('A folder with this name already exists');
     fs.renameSync(folder.path, newPath);
 
-    db.prepare(
-        `UPDATE folders SET name = ?, path = ?, updated_at = datetime('now') WHERE id = ?`
-    ).run(safeName, newPath, folderId);
+    await db.execute(
+        `UPDATE folders SET name = ?, path = ?, updated_at = NOW() WHERE id = ?`,
+        [safeName, newPath, folderId]
+    );
 
     return true;
 }
 
 /**
  * Delete a folder and all its contents.
+ *
+ * @param {number} folderId - Folder ID
+ * @param {number} userId - Owner user ID
+ * @returns {Promise<boolean>} True on success
  */
-function deleteFolder(folderId, userId) {
+async function deleteFolder(folderId, userId) {
     const db = getDatabase();
-    const folder = db.prepare('SELECT * FROM folders WHERE id = ? AND owner_id = ?').get(folderId, userId);
+    const [rows] = await db.execute(
+        'SELECT * FROM folders WHERE id = ? AND owner_id = ?',
+        [folderId, userId]
+    );
+    const folder = rows[0];
     if (!folder) throw new Error('Folder not found');
     if (folder.parent_id === null) throw new Error('Cannot delete root folder');
 
@@ -100,64 +133,86 @@ function deleteFolder(folderId, userId) {
     }
 
     // Delete all file metadata in this folder and subfolders
-    deleteFolderContents(folderId, userId, db);
+    await deleteFolderContents(folderId);
 
     // Delete folder record
-    db.prepare('DELETE FROM folders WHERE id = ?').run(folderId);
+    await db.execute('DELETE FROM folders WHERE id = ?', [folderId]);
 
-    updateUsedStorage(userId);
+    await updateUsedStorage(userId);
     return true;
 }
 
 /**
  * Recursively delete file metadata for a folder and its subfolders.
+ *
+ * @param {number} folderId - Folder ID
  */
-function deleteFolderContents(folderId, userId, db) {
+async function deleteFolderContents(folderId) {
+    const db = getDatabase();
+
     // Delete files in this folder
-    db.prepare('DELETE FROM file_metadata WHERE folder_id = ?').run(folderId);
+    await db.execute('DELETE FROM file_metadata WHERE folder_id = ?', [folderId]);
 
     // Process subfolders
-    const subfolders = db.prepare('SELECT id FROM folders WHERE parent_id = ?').all(folderId);
+    const [subfolders] = await db.execute(
+        'SELECT id FROM folders WHERE parent_id = ?',
+        [folderId]
+    );
     for (const sub of subfolders) {
-        deleteFolderContents(sub.id, userId, db);
-        db.prepare('DELETE FROM folders WHERE id = ?').run(sub.id);
+        await deleteFolderContents(sub.id);
+        await db.execute('DELETE FROM folders WHERE id = ?', [sub.id]);
     }
 }
 
 /**
  * Get folder by ID.
+ *
+ * @param {number} folderId - Folder ID
+ * @param {number} userId - Owner user ID
+ * @returns {Promise<object|undefined>} Folder object
  */
-function getFolder(folderId, userId) {
+async function getFolder(folderId, userId) {
     const db = getDatabase();
-    return db.prepare('SELECT * FROM folders WHERE id = ? AND owner_id = ?').get(folderId, userId);
+    const [rows] = await db.execute(
+        'SELECT * FROM folders WHERE id = ? AND owner_id = ?',
+        [folderId, userId]
+    );
+    return rows[0];
 }
 
 /**
  * Get folder tree for navigation (user's folders only).
+ *
+ * @param {number} userId - Owner user ID
+ * @param {number|null} parentId - Parent folder ID (null for root level)
+ * @returns {Promise<object[]>} Array of folder objects with children
  */
-function getFolderTree(userId, parentId = null) {
+async function getFolderTree(userId, parentId = null) {
     const db = getDatabase();
     let folders;
     if (parentId) {
-        folders = db.prepare(
+        [folders] = await db.execute(
             `SELECT id, name, parent_id FROM folders
              WHERE parent_id = ?
              AND owner_id = ?
-             ORDER BY name ASC`
-        ).all(parentId, userId);
+             ORDER BY name ASC`,
+            [parentId, userId]
+        );
     } else {
-        folders = db.prepare(
+        [folders] = await db.execute(
             `SELECT id, name, parent_id FROM folders
              WHERE parent_id IS NULL
              AND owner_id = ?
-             ORDER BY name ASC`
-        ).all(userId);
+             ORDER BY name ASC`,
+            [userId]
+        );
     }
 
-    return folders.map(f => ({
+    const childrenPromises = folders.map(async (f) => ({
         ...f,
-        children: getFolderTree(userId, f.id)
+        children: await getFolderTree(userId, f.id)
     }));
+    return Promise.all(childrenPromises);
 }
 
 module.exports = {

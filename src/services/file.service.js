@@ -19,62 +19,71 @@ const uploadDir = path.resolve(process.env.UPLOAD_DIR || './data/uploads');
 
 /**
  * Save uploaded file metadata to database.
+ *
+ * @param {object} file - Multer file object
+ * @param {number} folderId - Target folder ID
+ * @param {number} userId - Owner user ID
+ * @returns {Promise<number>} The inserted file metadata ID
  */
-function saveFileMetadata(file, folderId, userId) {
+async function saveFileMetadata(file, folderId, userId) {
     const db = getDatabase();
     const ext = getExtension(file.originalname);
     const imageCheck = isImage(file.originalname);
 
-    let width = null, height = null, exifData = null;
-
-    // Get image dimensions and EXIF data
-    if (imageCheck) {
-        try {
-            const metadata = sharp(file.path).metadata();
-            // sharp metadata is async, but we need to handle it
-            // We'll store what we can synchronously and update later
-        } catch (e) {
-            // Ignore EXIF errors
-        }
-    }
-
-    const result = db.prepare(
+    const [result] = await db.execute(
         `INSERT INTO file_metadata (name, original_name, folder_id, owner_id, path, size, mime_type, extension, is_image)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
-        file.filename,
-        file.originalname,
-        folderId,
-        userId,
-        file.path,
-        file.size,
-        file.mimetype || mime.lookup(file.originalname) || 'application/octet-stream',
-        ext,
-        imageCheck ? 1 : 0
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+            file.filename,
+            file.originalname,
+            folderId,
+            userId,
+            file.path,
+            file.size,
+            file.mimetype || mime.lookup(file.originalname) || 'application/octet-stream',
+            ext,
+            imageCheck ? 1 : 0
+        ]
     );
 
-    // Update image metadata asynchronously
+    const fileId = result.insertId;
+
+    // Update image metadata asynchronously (dimensions + EXIF)
     if (imageCheck) {
-        sharp(file.path).metadata().then(meta => {
-            db.prepare(
-                `UPDATE file_metadata SET width = ?, height = ?, exif_data = ? WHERE id = ?`
-            ).run(
-                meta.width || null,
-                meta.height || null,
-                meta.exif ? JSON.stringify(meta.exif) : null,
-                result.lastInsertRowid
-            );
-        }).catch(() => {});
+        updateImageMetadata(file.path, fileId).catch(() => {});
     }
 
     // Update user storage
-    updateUsedStorage(userId);
+    await updateUsedStorage(userId);
 
-    return result.lastInsertRowid;
+    return fileId;
+}
+
+/**
+ * Fetch image dimensions and EXIF data, then update the file_metadata row.
+ *
+ * @param {string} filePath - Path to the image file
+ * @param {number} fileId - File metadata ID
+ */
+async function updateImageMetadata(filePath, fileId) {
+    const db = getDatabase();
+    const meta = await sharp(filePath).metadata();
+    await db.execute(
+        `UPDATE file_metadata SET width = ?, height = ?, exif_data = ? WHERE id = ?`,
+        [
+            meta.width || null,
+            meta.height || null,
+            meta.exif ? JSON.stringify(meta.exif) : null,
+            fileId
+        ]
+    );
 }
 
 /**
  * Get image metadata (dimensions, EXIF).
+ *
+ * @param {string} filePath - Path to the image file
+ * @returns {Promise<object|null>} Image metadata object
  */
 async function getImageMetadata(filePath) {
     try {
@@ -96,6 +105,9 @@ async function getImageMetadata(filePath) {
 
 /**
  * Parse EXIF data from file path using exifr.
+ *
+ * @param {string} filePath - Path to the file
+ * @returns {Promise<object|null>} Parsed EXIF data
  */
 async function parseExif(filePath) {
     try {
@@ -144,6 +156,11 @@ async function parseExif(filePath) {
 
 /**
  * Generate a thumbnail for an image.
+ *
+ * @param {string} filePath - Path to the image file
+ * @param {number} maxWidth - Maximum thumbnail width
+ * @param {number} maxHeight - Maximum thumbnail height
+ * @returns {Promise<Buffer|null>} Thumbnail buffer
  */
 async function generateThumbnail(filePath, maxWidth = 200, maxHeight = 200) {
     try {
@@ -159,42 +176,61 @@ async function generateThumbnail(filePath, maxWidth = 200, maxHeight = 200) {
 
 /**
  * List files and folders in a directory.
+ *
+ * @param {number} userId - Current user ID
+ * @param {number|null} folderId - Target folder ID (null for root)
+ * @returns {Promise<object>} Object with currentFolder, breadcrumbs, folders, files
  */
-function listItems(userId, folderId = null) {
+async function listItems(userId, folderId = null) {
     const db = getDatabase();
 
     // If folderId is null, get user's root folder
     let targetFolderId = folderId;
     if (!targetFolderId) {
-        const rootFolder = db.prepare(
-            'SELECT id FROM folders WHERE owner_id = ? AND parent_id IS NULL'
-        ).get(userId);
-        if (rootFolder) {
-            targetFolderId = rootFolder.id;
+        const [rootRows] = await db.execute(
+            'SELECT id FROM folders WHERE owner_id = ? AND parent_id IS NULL',
+            [userId]
+        );
+        if (rootRows.length > 0) {
+            targetFolderId = rootRows[0].id;
         }
     }
 
-    const folders = db.prepare(
-        `SELECT id, name, parent_id, owner_id, created_at, updated_at
-         FROM folders WHERE parent_id ${targetFolderId ? '= ?' : 'IS NULL'}
-         AND (owner_id = ? OR id IN (SELECT folder_id FROM folder_permissions WHERE user_id = ?))
-         ORDER BY name ASC`
-    ).all(targetFolderId, userId, userId);
+    // Fetch subfolders — build SQL and params dynamically
+    const folderSql = targetFolderId
+        ? `SELECT id, name, parent_id, owner_id, created_at, updated_at
+           FROM folders WHERE parent_id = ?
+           AND (owner_id = ? OR id IN (SELECT folder_id FROM folder_permissions WHERE user_id = ?))
+           ORDER BY name ASC`
+        : `SELECT id, name, parent_id, owner_id, created_at, updated_at
+           FROM folders WHERE parent_id IS NULL
+           AND (owner_id = ? OR id IN (SELECT folder_id FROM folder_permissions WHERE user_id = ?))
+           ORDER BY name ASC`;
+    const folderParams = targetFolderId ? [targetFolderId, userId, userId] : [userId, userId];
+    const [folders] = await db.execute(folderSql, folderParams);
 
-    const files = db.prepare(
-        `SELECT id, name, original_name, folder_id, size, mime_type, extension, is_image, width, height,
-                created_at, updated_at
-         FROM file_metadata WHERE folder_id ${targetFolderId ? '= ?' : 'IS NULL'}
-         AND owner_id = ?
-         ORDER BY name ASC`
-    ).all(targetFolderId, userId);
+    // Fetch files — build SQL and params dynamically
+    const fileSql = targetFolderId
+        ? `SELECT id, name, original_name, folder_id, size, mime_type, extension, is_image, width, height,
+                  created_at, updated_at
+           FROM file_metadata WHERE folder_id = ?
+           AND owner_id = ?
+           ORDER BY name ASC`
+        : `SELECT id, name, original_name, folder_id, size, mime_type, extension, is_image, width, height,
+                  created_at, updated_at
+           FROM file_metadata WHERE folder_id IS NULL
+           AND owner_id = ?
+           ORDER BY name ASC`;
+    const fileParams = targetFolderId ? [targetFolderId, userId] : [userId];
+    const [files] = await db.execute(fileSql, fileParams);
 
     // Get current folder info for breadcrumbs
     let currentFolder = null;
     let breadcrumbs = [];
     if (targetFolderId) {
-        currentFolder = db.prepare('SELECT * FROM folders WHERE id = ?').get(targetFolderId);
-        breadcrumbs = getBreadcrumbs(targetFolderId);
+        const [folderRows] = await db.execute('SELECT * FROM folders WHERE id = ?', [targetFolderId]);
+        currentFolder = folderRows[0] || null;
+        breadcrumbs = await getBreadcrumbs(targetFolderId);
     }
 
     return {
@@ -207,14 +243,21 @@ function listItems(userId, folderId = null) {
 
 /**
  * Get breadcrumb path for a folder.
+ *
+ * @param {number} folderId - Folder ID
+ * @returns {Promise<object[]>} Array of folder objects from root to target
  */
-function getBreadcrumbs(folderId) {
+async function getBreadcrumbs(folderId) {
     const db = getDatabase();
     const crumbs = [];
     let currentId = folderId;
 
     while (currentId) {
-        const folder = db.prepare('SELECT id, name, parent_id FROM folders WHERE id = ?').get(currentId);
+        const [rows] = await db.execute(
+            'SELECT id, name, parent_id FROM folders WHERE id = ?',
+            [currentId]
+        );
+        const folder = rows[0];
         if (!folder) break;
         crumbs.unshift(folder);
         currentId = folder.parent_id;
@@ -225,8 +268,13 @@ function getBreadcrumbs(folderId) {
 
 /**
  * Search files and folders by name.
+ *
+ * @param {number} userId - Current user ID
+ * @param {string} query - Search term
+ * @param {number|null} folderId - Restrict search to this folder
+ * @returns {Promise<object>} Object with folders and files arrays
  */
-function searchItems(userId, query, folderId = null) {
+async function searchItems(userId, query, folderId = null) {
     const db = getDatabase();
     const searchTerm = `%${query}%`;
 
@@ -237,36 +285,48 @@ function searchItems(userId, query, folderId = null) {
         folderParams = [folderId];
     }
 
-    const folders = db.prepare(
+    const [folders] = await db.execute(
         `SELECT id, name, parent_id, owner_id, created_at
          FROM folders
          WHERE name LIKE ?
          AND (owner_id = ? OR id IN (SELECT folder_id FROM folder_permissions WHERE user_id = ?))
-         ORDER BY name ASC`
-    ).all(searchTerm, userId, userId);
+         ORDER BY name ASC`,
+        [searchTerm, userId, userId]
+    );
 
-    const files = db.prepare(
+    const [files] = await db.execute(
         `SELECT id, name, original_name, folder_id, size, mime_type, extension, is_image, created_at
          FROM file_metadata
          WHERE (name LIKE ? OR original_name LIKE ?)
          AND owner_id = ?
          ${folderQuery}
-         ORDER BY name ASC`
-    ).all(searchTerm, searchTerm, userId, ...folderParams);
+         ORDER BY name ASC`,
+        [searchTerm, searchTerm, userId, ...folderParams]
+    );
 
     return { folders, files };
 }
 
 /**
  * Copy a file to another folder.
+ *
+ * @param {number} fileId - Source file ID
+ * @param {number} targetFolderId - Target folder ID
+ * @param {number} userId - Owner user ID
+ * @returns {Promise<number>} New file metadata ID
  */
-function copyFile(fileId, targetFolderId, userId) {
+async function copyFile(fileId, targetFolderId, userId) {
     const db = getDatabase();
-    const file = db.prepare('SELECT * FROM file_metadata WHERE id = ? AND owner_id = ?').get(fileId, userId);
+    const [fileRows] = await db.execute(
+        'SELECT * FROM file_metadata WHERE id = ? AND owner_id = ?',
+        [fileId, userId]
+    );
+    const file = fileRows[0];
     if (!file) throw new Error('File not found');
 
     // Get target folder path
-    const targetFolder = db.prepare('SELECT * FROM folders WHERE id = ?').get(targetFolderId);
+    const [folderRows] = await db.execute('SELECT * FROM folders WHERE id = ?', [targetFolderId]);
+    const targetFolder = folderRows[0];
     if (!targetFolder) throw new Error('Target folder not found');
 
     const sourcePath = file.path;
@@ -280,34 +340,45 @@ function copyFile(fileId, targetFolderId, userId) {
     const stat = fs.statSync(targetPath);
 
     // Insert new file metadata
-    const result = db.prepare(
+    const [result] = await db.execute(
         `INSERT INTO file_metadata (name, original_name, folder_id, owner_id, path, size, mime_type, extension, is_image)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
-        newName,
-        file.original_name,
-        targetFolderId,
-        userId,
-        targetPath,
-        stat.size,
-        file.mime_type,
-        file.extension,
-        file.is_image
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+            newName,
+            file.original_name,
+            targetFolderId,
+            userId,
+            targetPath,
+            stat.size,
+            file.mime_type,
+            file.extension,
+            file.is_image
+        ]
     );
 
-    updateUsedStorage(userId);
-    return result.lastInsertRowid;
+    await updateUsedStorage(userId);
+    return result.insertId;
 }
 
 /**
  * Move a file to another folder.
+ *
+ * @param {number} fileId - File ID
+ * @param {number} targetFolderId - Target folder ID
+ * @param {number} userId - Owner user ID
+ * @returns {Promise<boolean>} True on success
  */
-function moveFile(fileId, targetFolderId, userId) {
+async function moveFile(fileId, targetFolderId, userId) {
     const db = getDatabase();
-    const file = db.prepare('SELECT * FROM file_metadata WHERE id = ? AND owner_id = ?').get(fileId, userId);
+    const [fileRows] = await db.execute(
+        'SELECT * FROM file_metadata WHERE id = ? AND owner_id = ?',
+        [fileId, userId]
+    );
+    const file = fileRows[0];
     if (!file) throw new Error('File not found');
 
-    const targetFolder = db.prepare('SELECT * FROM folders WHERE id = ?').get(targetFolderId);
+    const [folderRows] = await db.execute('SELECT * FROM folders WHERE id = ?', [targetFolderId]);
+    const targetFolder = folderRows[0];
     if (!targetFolder) throw new Error('Target folder not found');
 
     const sourcePath = file.path;
@@ -320,19 +391,28 @@ function moveFile(fileId, targetFolderId, userId) {
     fs.renameSync(sourcePath, targetPath);
 
     // Update file metadata
-    db.prepare(
-        `UPDATE file_metadata SET folder_id = ?, path = ?, name = ?, updated_at = datetime('now') WHERE id = ?`
-    ).run(targetFolderId, targetPath, newName, fileId);
+    await db.execute(
+        `UPDATE file_metadata SET folder_id = ?, path = ?, name = ?, updated_at = NOW() WHERE id = ?`,
+        [targetFolderId, targetPath, newName, fileId]
+    );
 
     return true;
 }
 
 /**
  * Delete a file permanently.
+ *
+ * @param {number} fileId - File ID
+ * @param {number} userId - Owner user ID
+ * @returns {Promise<boolean>} True on success
  */
-function deleteFile(fileId, userId) {
+async function deleteFile(fileId, userId) {
     const db = getDatabase();
-    const file = db.prepare('SELECT * FROM file_metadata WHERE id = ? AND owner_id = ?').get(fileId, userId);
+    const [fileRows] = await db.execute(
+        'SELECT * FROM file_metadata WHERE id = ? AND owner_id = ?',
+        [fileId, userId]
+    );
+    const file = fileRows[0];
     if (!file) throw new Error('File not found');
 
     // Delete physical file
@@ -341,17 +421,26 @@ function deleteFile(fileId, userId) {
     }
 
     // Delete metadata
-    db.prepare('DELETE FROM file_metadata WHERE id = ?').run(fileId);
-    updateUsedStorage(userId);
+    await db.execute('DELETE FROM file_metadata WHERE id = ?', [fileId]);
+    await updateUsedStorage(userId);
     return true;
 }
 
 /**
  * Rename a file.
+ *
+ * @param {number} fileId - File ID
+ * @param {string} newName - New filename
+ * @param {number} userId - Owner user ID
+ * @returns {Promise<boolean>} True on success
  */
-function renameFile(fileId, newName, userId) {
+async function renameFile(fileId, newName, userId) {
     const db = getDatabase();
-    const file = db.prepare('SELECT * FROM file_metadata WHERE id = ? AND owner_id = ?').get(fileId, userId);
+    const [fileRows] = await db.execute(
+        'SELECT * FROM file_metadata WHERE id = ? AND owner_id = ?',
+        [fileId, userId]
+    );
+    const file = fileRows[0];
     if (!file) throw new Error('File not found');
 
     const safeName = sanitizeFilename(newName);
@@ -364,15 +453,16 @@ function renameFile(fileId, newName, userId) {
 
     fs.renameSync(file.path, newPath);
 
-    db.prepare(
-        `UPDATE file_metadata SET name = ?, original_name = ?, path = ?, extension = ?, is_image = ?, updated_at = datetime('now') WHERE id = ?`
-    ).run(
-        safeName,
-        safeName,
-        newPath,
-        getExtension(safeName),
-        isImage(safeName) ? 1 : 0,
-        fileId
+    await db.execute(
+        `UPDATE file_metadata SET name = ?, original_name = ?, path = ?, extension = ?, is_image = ?, updated_at = NOW() WHERE id = ?`,
+        [
+            safeName,
+            safeName,
+            newPath,
+            getExtension(safeName),
+            isImage(safeName) ? 1 : 0,
+            fileId
+        ]
     );
 
     return true;
@@ -380,38 +470,64 @@ function renameFile(fileId, newName, userId) {
 
 /**
  * Get file info.
+ *
+ * @param {number} fileId - File ID
+ * @param {number} userId - Owner user ID
+ * @returns {Promise<object|undefined>} File metadata object
  */
-function getFileInfo(fileId, userId) {
+async function getFileInfo(fileId, userId) {
     const db = getDatabase();
-    return db.prepare('SELECT * FROM file_metadata WHERE id = ? AND owner_id = ?').get(fileId, userId);
+    const [rows] = await db.execute(
+        'SELECT * FROM file_metadata WHERE id = ? AND owner_id = ?',
+        [fileId, userId]
+    );
+    return rows[0];
 }
 
 /**
  * Update file content (for text editing).
+ *
+ * @param {number} fileId - File ID
+ * @param {string} content - New file content
+ * @param {number} userId - Owner user ID
+ * @returns {Promise<boolean>} True on success
  */
-function updateFileContent(fileId, content, userId) {
+async function updateFileContent(fileId, content, userId) {
     const db = getDatabase();
-    const file = db.prepare('SELECT * FROM file_metadata WHERE id = ? AND owner_id = ?').get(fileId, userId);
+    const [fileRows] = await db.execute(
+        'SELECT * FROM file_metadata WHERE id = ? AND owner_id = ?',
+        [fileId, userId]
+    );
+    const file = fileRows[0];
     if (!file) throw new Error('File not found');
 
     const buffer = Buffer.from(content, 'utf8');
     fs.writeFileSync(file.path, buffer);
 
     const stat = fs.statSync(file.path);
-    db.prepare(
-        `UPDATE file_metadata SET size = ?, updated_at = datetime('now') WHERE id = ?`
-    ).run(stat.size, fileId);
+    await db.execute(
+        `UPDATE file_metadata SET size = ?, updated_at = NOW() WHERE id = ?`,
+        [stat.size, fileId]
+    );
 
-    updateUsedStorage(userId);
+    await updateUsedStorage(userId);
     return true;
 }
 
 /**
  * Read file content (for text editing).
+ *
+ * @param {number} fileId - File ID
+ * @param {number} userId - Owner user ID
+ * @returns {Promise<string>} File content
  */
-function readFileContent(fileId, userId) {
+async function readFileContent(fileId, userId) {
     const db = getDatabase();
-    const file = db.prepare('SELECT * FROM file_metadata WHERE id = ? AND owner_id = ?').get(fileId, userId);
+    const [fileRows] = await db.execute(
+        'SELECT * FROM file_metadata WHERE id = ? AND owner_id = ?',
+        [fileId, userId]
+    );
+    const file = fileRows[0];
     if (!file) throw new Error('File not found');
 
     if (!fs.existsSync(file.path)) throw new Error('File not found on disk');
@@ -422,12 +538,18 @@ function readFileContent(fileId, userId) {
 
 /**
  * Create a zip archive of multiple files.
+ *
+ * @param {number[]} fileIds - Array of file IDs
+ * @param {number} userId - Owner user ID
+ * @returns {Promise<archiver.Archiver>} Archiver stream
  */
-function createZipArchive(fileIds, userId) {
+async function createZipArchive(fileIds, userId) {
     const db = getDatabase();
-    const files = db.prepare(
-        `SELECT * FROM file_metadata WHERE id IN (${fileIds.map(() => '?').join(',')}) AND owner_id = ?`
-    ).all(...fileIds, userId);
+    const placeholders = fileIds.map(() => '?').join(',');
+    const [files] = await db.execute(
+        `SELECT * FROM file_metadata WHERE id IN (${placeholders}) AND owner_id = ?`,
+        [...fileIds, userId]
+    );
 
     const archive = archiver('zip', { zlib: { level: 5 } });
     for (const file of files) {

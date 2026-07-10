@@ -12,13 +12,13 @@
     "file-manager",
     "docker",
     "multi-user",
-    "quota"
+    "quota",
+    "mysql"
   ],
   "license": "MIT",
   "dependencies": {
     "archiver": "^7.0.1",
     "bcryptjs": "^2.4.3",
-    "better-sqlite3": "^12.11.1",
     "connect-flash": "^0.1.1",
     "cookie-parser": "^1.4.7",
     "csurf": "^1.11.0",
@@ -31,6 +31,7 @@
     "mime-types": "^2.1.35",
     "morgan": "^1.10.0",
     "multer": "^1.4.5-lts.1",
+    "mysql2": "^3.11.0",
     "sharp": "^0.33.5",
     "uuid": "^10.0.0"
   },

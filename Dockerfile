@@ -26,7 +26,11 @@ RUN mkdir -p /app/data/uploads
 # Set environment defaults
 ENV NODE_ENV=production
 ENV PORT=3000
-ENV DB_PATH=/app/data/database.db
+ENV DB_HOST=localhost
+ENV DB_PORT=3306
+ENV DB_USER=root
+ENV DB_PASSWORD=
+ENV DB_NAME=file_manager
 ENV UPLOAD_DIR=/app/data/uploads
 
 # Expose port

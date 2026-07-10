@@ -2,18 +2,19 @@ const express = require('express');
 const router = express.Router();
 const userService = require('../services/user.service');
 const { getSetting } = require('../db/database');
+const asyncHandler = require('../utils/asyncHandler');
 
 /**
  * POST /api/auth/login
  */
-router.post('/login', (req, res) => {
+router.post('/login', asyncHandler(async (req, res) => {
     const { username, password } = req.body;
 
     if (!username || !password) {
         return res.status(400).json({ error: 'Username and password are required' });
     }
 
-    const user = userService.verifyPassword(username, password);
+    const user = await userService.verifyPassword(username, password);
     if (!user) {
         return res.status(401).json({ error: 'Invalid username or password' });
     }
@@ -32,7 +33,7 @@ router.post('/login', (req, res) => {
             language: user.language
         }
     });
-});
+}));
 
 /**
  * POST /api/auth/logout
@@ -50,25 +51,25 @@ router.post('/logout', (req, res) => {
 /**
  * GET /api/auth/me
  */
-router.get('/me', (req, res) => {
+router.get('/me', asyncHandler(async (req, res) => {
     if (!req.session || !req.session.userId) {
         return res.status(401).json({ error: 'Not authenticated' });
     }
 
-    const user = userService.getUserById(req.session.userId);
+    const user = await userService.getUserById(req.session.userId);
     if (!user) {
         return res.status(401).json({ error: 'User not found' });
     }
 
     res.json({ user });
-});
+}));
 
 /**
  * POST /api/auth/register
  */
-router.post('/register', (req, res) => {
-    const allowRegistration = getSetting('allow_registration', '0') === '1';
-    if (!allowRegistration) {
+router.post('/register', asyncHandler(async (req, res) => {
+    const allowRegistration = await getSetting('allow_registration', '0');
+    if (allowRegistration !== '1') {
         return res.status(403).json({ error: 'Registration is disabled' });
     }
 
@@ -82,21 +83,17 @@ router.post('/register', (req, res) => {
         return res.status(400).json({ error: 'Password must be at least 6 characters' });
     }
 
-    try {
-        const user = userService.createUser(username, password, email, 'user', null, language || 'en');
-        req.session.userId = user.id;
-        req.session.username = user.username;
-        req.session.role = user.role;
-        res.json({ success: true, user });
-    } catch (e) {
-        res.status(400).json({ error: e.message });
-    }
-});
+    const user = await userService.createUser(username, password, email, 'user', null, language || 'en');
+    req.session.userId = user.id;
+    req.session.username = user.username;
+    req.session.role = user.role;
+    res.json({ success: true, user });
+}));
 
 /**
  * POST /api/auth/change-password
  */
-router.post('/change-password', (req, res) => {
+router.post('/change-password', asyncHandler(async (req, res) => {
     if (!req.session || !req.session.userId) {
         return res.status(401).json({ error: 'Not authenticated' });
     }
@@ -110,13 +107,13 @@ router.post('/change-password', (req, res) => {
         return res.status(400).json({ error: 'New password must be at least 6 characters' });
     }
 
-    const user = userService.verifyPassword(req.session.username, currentPassword);
+    const user = await userService.verifyPassword(req.session.username, currentPassword);
     if (!user) {
         return res.status(401).json({ error: 'Current password is incorrect' });
     }
 
-    userService.updateUser(req.session.userId, { password: newPassword });
+    await userService.updateUser(req.session.userId, { password: newPassword });
     res.json({ success: true });
-});
+}));
 
 module.exports = router;

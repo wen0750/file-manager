@@ -44,12 +44,40 @@ function stripGeneratedUploadPrefix(filename) {
     return filename;
 }
 
+function sanitizeUploadFilename(filename) {
+    const baseName = path.basename(String(filename || ''));
+    const cleaned = baseName
+        .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+        .replace(/[. ]+$/g, '')
+        .trim();
+
+    return cleaned || 'unnamed';
+}
+
+function normalizeUploadedFilename(filename) {
+    const originalValue = String(filename || '');
+
+    try {
+        const decodedValue = Buffer.from(originalValue, 'latin1').toString('utf8');
+        const originalHasCjk = /[\u3400-\u9fff]/.test(originalValue);
+        const decodedHasCjk = /[\u3400-\u9fff]/.test(decodedValue);
+
+        if (!originalHasCjk && decodedHasCjk) {
+            return decodedValue;
+        }
+    } catch (error) {
+        return originalValue;
+    }
+
+    return originalValue;
+}
+
 function getPreferredUploadFilename(file) {
     const originalName = stripGeneratedUploadPrefix(
-        sanitizeFilename(file.originalname) || ''
+        sanitizeUploadFilename(normalizeUploadedFilename(file.originalname)) || ''
     );
     const generatedName = stripGeneratedUploadPrefix(
-        sanitizeFilename(file.filename) || ''
+        sanitizeUploadFilename(file.filename) || ''
     );
 
     return originalName || generatedName || file.filename;
@@ -79,6 +107,8 @@ function getUniqueFilename(directoryPath, desiredName) {
  */
 async function saveFileMetadata(file, folderId, userId) {
     const db = getDatabase();
+    const normalizedOriginalName = normalizeUploadedFilename(file.originalname);
+    file.originalname = normalizedOriginalName;
     const preserveOriginalName = shouldPreserveUploadFilename();
     const desiredFilename = preserveOriginalName
         ? getPreferredUploadFilename(file)
@@ -125,12 +155,12 @@ async function saveFileMetadata(file, folderId, userId) {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
             storedFileName,
-            file.originalname,
+            normalizedOriginalName,
             folderId,
             userId,
             storedFilePath,
             file.size,
-            file.mimetype || mime.lookup(file.originalname) || 'application/octet-stream',
+            file.mimetype || mime.lookup(normalizedOriginalName) || 'application/octet-stream',
             ext,
             imageCheck ? 1 : 0
         ]
@@ -758,7 +788,7 @@ async function renameFile(fileId, newName, userId) {
     const file = fileRows[0];
     if (!file) throw new Error('File not found');
 
-    const safeName = sanitizeFilename(newName);
+    const safeName = sanitizeUploadFilename(newName);
     if (!safeName) throw new Error('Invalid filename');
 
     const dir = path.dirname(file.path);

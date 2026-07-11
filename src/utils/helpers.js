@@ -1,188 +1,89 @@
-const path = require('path');
 const fs = require('fs');
+const path = require('path');
 
-const IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.tiff', '.ico'];
-const VIDEO_EXTENSIONS = ['.mp4', '.webm', '.ogg', '.mov', '.avi', '.mkv', '.flv', '.wmv'];
-const AUDIO_EXTENSIONS = ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a', '.wma'];
-const TEXT_EXTENSIONS = ['.txt', '.log', '.csv', '.json', '.xml', '.yaml', '.yml', '.md', '.ini', '.conf', '.env'];
-const EDITABLE_EXTENSIONS = ['.css', '.js', '.html', '.txt', '.json', '.xml', '.md', '.csv', '.yaml', '.yml', '.log', '.ini', '.conf', '.py', '.php', '.sql', '.sh', '.ts', '.jsx', '.tsx', '.vue'];
+function sanitizeFilename(filename) {
+    const baseName = path.basename(String(filename || ''));
+    const cleaned = baseName
+        .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+        .replace(/[. ]+$/g, '')
+        .trim();
 
-/**
- * Get file extension from filename.
- */
-function getExtension(filename) {
-    return path.extname(filename).toLowerCase();
+    return cleaned || 'unnamed';
 }
 
-/**
- * Check if a file is an image.
- */
-function isImage(filename) {
-    return IMAGE_EXTENSIONS.includes(getExtension(filename));
-}
+function safeJoinPath(basePath, ...segments) {
+    const normalizedBasePath = path.resolve(String(basePath || '.'));
+    const cleanedSegments = segments.map((segment) => String(segment || ''));
+    const targetPath = path.resolve(normalizedBasePath, ...cleanedSegments);
+    const normalizedBaseWithSep = normalizedBasePath.endsWith(path.sep)
+        ? normalizedBasePath
+        : `${normalizedBasePath}${path.sep}`;
 
-/**
- * Check if a file is a video.
- */
-function isVideo(filename) {
-    return VIDEO_EXTENSIONS.includes(getExtension(filename));
-}
-
-/**
- * Check if a file is audio.
- */
-function isAudio(filename) {
-    return AUDIO_EXTENSIONS.includes(getExtension(filename));
-}
-
-/**
- * Check if a file is a PDF.
- */
-function isPdf(filename) {
-    return getExtension(filename) === '.pdf';
-}
-
-/**
- * Check if a file is text-based (previewable).
- */
-function isText(filename) {
-    return TEXT_EXTENSIONS.includes(getExtension(filename));
-}
-
-/**
- * Check if a file can be edited in the code editor.
- */
-function isEditable(filename) {
-    return EDITABLE_EXTENSIONS.includes(getExtension(filename));
-}
-
-/**
- * Check if a file is previewable (images, videos, audio, PDF, text).
- */
-function isPreviewable(filename) {
-    return isImage(filename) || isVideo(filename) || isAudio(filename) || isPdf(filename) || isText(filename);
-}
-
-/**
- * Get the CodeMirror mode for a given file extension.
- */
-function getEditorMode(filename) {
-    const ext = getExtension(filename);
-    const modes = {
-        '.css': 'css',
-        '.js': 'javascript',
-        '.html': 'htmlmixed',
-        '.txt': 'text',
-        '.json': 'application/json',
-        '.xml': 'xml',
-        '.md': 'markdown',
-        '.csv': 'text',
-        '.yaml': 'yaml',
-        '.yml': 'yaml',
-        '.log': 'text',
-        '.ini': 'properties',
-        '.conf': 'properties',
-        '.py': 'python',
-        '.php': 'php',
-        '.sql': 'sql',
-        '.sh': 'shell',
-        '.ts': 'text/typescript',
-        '.jsx': 'text/jsx',
-        '.tsx': 'text/jsx',
-        '.vue': 'htmlmixed'
-    };
-    return modes[ext] || 'text';
-}
-
-/**
- * Format bytes to human-readable string.
- */
-function formatBytes(bytes, decimals = 2) {
-    if (!bytes || bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(decimals)) + ' ' + sizes[i];
-}
-
-/**
- * Format date to readable string.
- */
-function formatDate(dateStr) {
-    if (!dateStr) return '';
-    const d = new Date(dateStr + 'Z');
-    return d.toLocaleString();
-}
-
-/**
- * Sanitize a filename to prevent directory traversal.
- */
-function sanitizeFilename(name) {
-    if (!name) return '';
-    // Remove path traversal attempts
-    name = name.replace(/\.\./g, '').replace(/\/+/g, '').replace(/\\+/g, '');
-    // Remove dangerous characters
-    name = name.replace(/[<>:"|?*\x00-\x1f]/g, '_');
-    return name.trim();
-}
-
-/**
- * Generate a safe path for a file within the upload directory.
- */
-function safeJoinPath(base, ...parts) {
-    const joined = path.normalize(path.join(base, ...parts));
-    if (!joined.startsWith(path.resolve(base))) {
+    if (targetPath !== normalizedBasePath && !targetPath.startsWith(normalizedBaseWithSep)) {
         throw new Error('Path traversal detected');
     }
-    return joined;
+
+    return targetPath;
 }
 
-/**
- * Recursively get directory size.
- */
-function getDirectorySize(dirPath) {
-    let totalSize = 0;
-    if (!fs.existsSync(dirPath)) return 0;
-
-    const items = fs.readdirSync(dirPath);
-    for (const item of items) {
-        const itemPath = path.join(dirPath, item);
-        const stat = fs.statSync(itemPath);
-        if (stat.isFile()) {
-            totalSize += stat.size;
-        } else if (stat.isDirectory()) {
-            totalSize += getDirectorySize(itemPath);
-        }
-    }
-    return totalSize;
+function getExtension(filename) {
+    return path.extname(String(filename || '')).toLowerCase();
 }
 
-/**
- * Generate a random token.
- */
-function generateToken(length = 32) {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    let token = '';
-    for (let i = 0; i < length; i++) {
-        token += chars.charAt(Math.floor(Math.random() * chars.length));
+function isImage(filename) {
+    const extension = getExtension(filename);
+    return new Set([
+        '.jpg',
+        '.jpeg',
+        '.png',
+        '.gif',
+        '.webp',
+        '.bmp',
+        '.svg',
+        '.ico',
+        '.tif',
+        '.tiff',
+        '.avif'
+    ]).has(extension);
+}
+
+function getDirectorySize(directoryPath) {
+    if (!directoryPath || !fs.existsSync(directoryPath)) {
+        return 0;
     }
-    return token;
+
+    const stat = fs.statSync(directoryPath);
+    if (!stat.isDirectory()) {
+        return stat.size;
+    }
+
+    return fs.readdirSync(directoryPath).reduce((total, entry) => {
+        const entryPath = path.join(directoryPath, entry);
+        return total + getDirectorySize(entryPath);
+    }, 0);
+}
+
+function formatBytes(bytes) {
+    const value = Number(bytes) || 0;
+    if (value === 0) {
+        return '0 Bytes';
+    }
+
+    const units = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+    const index = Math.min(
+        Math.floor(Math.log(value) / Math.log(1024)),
+        units.length - 1
+    );
+    const formatted = value / Math.pow(1024, index);
+
+    return `${formatted.toFixed(index === 0 ? 0 : 2)} ${units[index]}`;
 }
 
 module.exports = {
-    getExtension,
-    isImage,
-    isVideo,
-    isAudio,
-    isPdf,
-    isText,
-    isEditable,
-    isPreviewable,
-    getEditorMode,
-    formatBytes,
-    formatDate,
     sanitizeFilename,
     safeJoinPath,
+    getExtension,
+    isImage,
     getDirectorySize,
-    generateToken
+    formatBytes
 };

@@ -316,6 +316,21 @@ async function listItems(userId, folderId = null) {
         }
     }
 
+    // Get current folder info for breadcrumbs and filesystem sync
+    let currentFolder = null;
+    let breadcrumbs = [];
+    if (targetFolderId) {
+        const [folderRows] = await db.execute('SELECT * FROM folders WHERE id = ?', [targetFolderId]);
+        currentFolder = folderRows[0] || null;
+        breadcrumbs = await getBreadcrumbs(targetFolderId);
+    }
+
+    await syncFilesystemFoldersToMetadata(
+        userId,
+        targetFolderId || null,
+        currentFolder?.path || null
+    );
+
     // Fetch subfolders — build SQL and params dynamically
     const folderSql = targetFolderId
         ? `SELECT id, name, parent_id, owner_id, created_at, updated_at
@@ -344,15 +359,6 @@ async function listItems(userId, folderId = null) {
     const fileParams = targetFolderId ? [targetFolderId, userId] : [userId];
     const [files] = await db.execute(fileSql, fileParams);
 
-    // Get current folder info for breadcrumbs
-    let currentFolder = null;
-    let breadcrumbs = [];
-    if (targetFolderId) {
-        const [folderRows] = await db.execute('SELECT * FROM folders WHERE id = ?', [targetFolderId]);
-        currentFolder = folderRows[0] || null;
-        breadcrumbs = await getBreadcrumbs(targetFolderId);
-    }
-
     const scanDirectoryPath =
         currentFolder?.path ||
         (files && files.length > 0 && files[0]?.path ? path.dirname(files[0].path) : null);
@@ -371,6 +377,60 @@ async function listItems(userId, folderId = null) {
         folders: folders || [],
         files: mergedFiles
     };
+}
+
+async function syncFilesystemFoldersToMetadata(userId, parentFolderId, directoryPath) {
+    if (!isFilesystemScanEnabled() || !directoryPath || !fs.existsSync(directoryPath)) {
+        return;
+    }
+
+    const db = getDatabase();
+    const [existingFolders] = await db.execute(
+        parentFolderId
+            ? 'SELECT id, name, path FROM folders WHERE owner_id = ? AND parent_id = ?'
+            : 'SELECT id, name, path FROM folders WHERE owner_id = ? AND parent_id IS NULL',
+        parentFolderId ? [userId, parentFolderId] : [userId]
+    );
+
+    const existingPaths = new Set(
+        (existingFolders || [])
+            .map((folder) => path.resolve(folder.path || ''))
+            .filter(Boolean)
+    );
+
+    const entries = fs.readdirSync(directoryPath, { withFileTypes: true });
+
+    for (const entry of entries) {
+        if (!entry.isDirectory()) {
+            continue;
+        }
+
+        const folderName = sanitizeFilename(entry.name);
+        const folderPath = safeJoinPath(directoryPath, entry.name);
+        const resolvedPath = path.resolve(folderPath);
+
+        if (existingPaths.has(resolvedPath)) {
+            continue;
+        }
+
+        const [matchedRows] = await db.execute(
+            'SELECT id FROM folders WHERE owner_id = ? AND path = ? LIMIT 1',
+            [userId, folderPath]
+        );
+
+        if (matchedRows.length > 0) {
+            existingPaths.add(resolvedPath);
+            continue;
+        }
+
+        await db.execute(
+            `INSERT INTO folders (name, parent_id, owner_id, path)
+             VALUES (?, ?, ?, ?)`,
+            [folderName, parentFolderId, userId, folderPath]
+        );
+
+        existingPaths.add(resolvedPath);
+    }
 }
 
 /**

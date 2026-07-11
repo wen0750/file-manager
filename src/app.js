@@ -12,6 +12,16 @@ const { csrfProtection, csrfToken } = require('./middleware/csrf');
 
 const app = express();
 
+const trustProxyValue = process.env.TRUST_PROXY ?? "1";
+
+if (trustProxyValue !== "") {
+  const parsedTrustProxy = Number(trustProxyValue);
+  app.set(
+    "trust proxy",
+    Number.isNaN(parsedTrustProxy) ? trustProxyValue : parsedTrustProxy
+  );
+}
+
 // Ensure upload directory exists
 const uploadDir = path.resolve(process.env.UPLOAD_DIR || './data/uploads');
 if (!fs.existsSync(uploadDir)) {

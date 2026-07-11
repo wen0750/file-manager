@@ -481,6 +481,7 @@ function showItemMenu(e, type, id) {
     menu.id = 'contextMenu';
     menu.className = 'dropdown-menu show';
     menu.style.position = 'fixed';
+    menu.style.maxWidth = '180px';
     menu.style.left = e.clientX + 'px';
     menu.style.top = e.clientY + 'px';
     menu.style.zIndex = '10000';

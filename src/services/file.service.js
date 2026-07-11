@@ -14,9 +14,60 @@ const {
     formatBytes
 } = require('../utils/helpers');
 const { updateUsedStorage } = require('../middleware/quota');
-const { mergeFilesystemOnlyFiles } = require('./filesystem-scan.service');
+const {
+    collectFilesystemFiles,
+    isFilesystemScanEnabled,
+    mergeFilesystemOnlyFiles
+} = require('./filesystem-scan.service');
 
-const uploadDir = path.resolve(process.env.UPLOAD_DIR || './data/uploads');
+function shouldPreserveUploadFilename() {
+    return String(process.env.PRESERVE_UPLOAD_FILENAME || '').toLowerCase() === 'true';
+}
+
+function stripGeneratedUploadPrefix(filename) {
+    if (!filename) {
+        return '';
+    }
+
+    const patterns = [
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}_(.+)$/i,
+        /^\d{10,}_(.+)$/
+    ];
+
+    for (const pattern of patterns) {
+        const match = filename.match(pattern);
+        if (match && match[1]) {
+            return match[1];
+        }
+    }
+
+    return filename;
+}
+
+function getPreferredUploadFilename(file) {
+    const originalName = stripGeneratedUploadPrefix(
+        sanitizeFilename(file.originalname) || ''
+    );
+    const generatedName = stripGeneratedUploadPrefix(
+        sanitizeFilename(file.filename) || ''
+    );
+
+    return originalName || generatedName || file.filename;
+}
+
+function getUniqueFilename(directoryPath, desiredName) {
+    const ext = path.extname(desiredName);
+    const baseName = path.basename(desiredName, ext);
+    let candidate = desiredName;
+    let counter = 1;
+
+    while (fs.existsSync(path.join(directoryPath, candidate))) {
+        candidate = `${baseName} (${counter})${ext}`;
+        counter += 1;
+    }
+
+    return candidate;
+}
 
 /**
  * Save uploaded file metadata to database.
@@ -28,6 +79,44 @@ const uploadDir = path.resolve(process.env.UPLOAD_DIR || './data/uploads');
  */
 async function saveFileMetadata(file, folderId, userId) {
     const db = getDatabase();
+    const preserveOriginalName = shouldPreserveUploadFilename();
+    const desiredFilename = preserveOriginalName
+        ? getPreferredUploadFilename(file)
+        : file.filename;
+    let storedFileName = desiredFilename;
+    let storedFilePath = file.path;
+
+    if (folderId) {
+        const [folderRows] = await db.execute(
+            'SELECT id, path FROM folders WHERE id = ?',
+            [folderId]
+        );
+        const targetFolder = folderRows[0];
+        if (!targetFolder) throw new Error('Target folder not found');
+
+        if (targetFolder.path) {
+            if (!fs.existsSync(targetFolder.path)) {
+                fs.mkdirSync(targetFolder.path, { recursive: true });
+            }
+
+            storedFileName = getUniqueFilename(targetFolder.path, desiredFilename);
+            const targetPath = safeJoinPath(targetFolder.path, storedFileName);
+            if (path.resolve(file.path) !== path.resolve(targetPath)) {
+                fs.renameSync(file.path, targetPath);
+            }
+            storedFilePath = targetPath;
+            file.path = targetPath;
+        }
+    } else if (preserveOriginalName) {
+        storedFileName = getUniqueFilename(path.dirname(file.path), desiredFilename);
+        const targetPath = safeJoinPath(path.dirname(file.path), storedFileName);
+        if (path.resolve(file.path) !== path.resolve(targetPath)) {
+            fs.renameSync(file.path, targetPath);
+        }
+        storedFilePath = targetPath;
+        file.path = targetPath;
+    }
+
     const ext = getExtension(file.originalname);
     const imageCheck = isImage(file.originalname);
 
@@ -35,11 +124,11 @@ async function saveFileMetadata(file, folderId, userId) {
         `INSERT INTO file_metadata (name, original_name, folder_id, owner_id, path, size, mime_type, extension, is_image)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-            file.filename,
+            storedFileName,
             file.originalname,
             folderId,
             userId,
-            file.path,
+            storedFilePath,
             file.size,
             file.mimetype || mime.lookup(file.originalname) || 'application/octet-stream',
             ext,
@@ -51,7 +140,7 @@ async function saveFileMetadata(file, folderId, userId) {
 
     // Update image metadata asynchronously (dimensions + EXIF)
     if (imageCheck) {
-        updateImageMetadata(file.path, fileId).catch(() => {});
+        updateImageMetadata(storedFilePath, fileId).catch(() => {});
     }
 
     // Update user storage
@@ -213,12 +302,12 @@ async function listItems(userId, folderId = null) {
     // Fetch files — build SQL and params dynamically
     const fileSql = targetFolderId
         ? `SELECT id, name, original_name, folder_id, size, mime_type, extension, is_image, width, height,
-                  created_at, updated_at
+                  path, created_at, updated_at
            FROM file_metadata WHERE folder_id = ?
            AND owner_id = ?
            ORDER BY name ASC`
         : `SELECT id, name, original_name, folder_id, size, mime_type, extension, is_image, width, height,
-                  created_at, updated_at
+                  path, created_at, updated_at
            FROM file_metadata WHERE folder_id IS NULL
            AND owner_id = ?
            ORDER BY name ASC`;
@@ -234,10 +323,16 @@ async function listItems(userId, folderId = null) {
         breadcrumbs = await getBreadcrumbs(targetFolderId);
     }
 
-    const mergedFiles = await mergeFilesystemOnlyFiles(
+    const scanDirectoryPath =
+        currentFolder?.path ||
+        (files && files.length > 0 && files[0]?.path ? path.dirname(files[0].path) : null);
+    const canSyncFilesystemFiles = !currentFolder || currentFolder.owner_id === userId;
+
+    const mergedFiles = await syncFilesystemFilesToMetadata(
+        userId,
+        targetFolderId || null,
         files || [],
-        currentFolder?.path || uploadDir,
-        targetFolderId || null
+        canSyncFilesystemFiles ? scanDirectoryPath : null
     );
 
     return {
@@ -285,6 +380,33 @@ async function searchItems(userId, query, folderId = null) {
     const db = getDatabase();
     const searchTerm = `%${query}%`;
 
+    if (isFilesystemScanEnabled()) {
+        const syncDirectoryPath = await getFolderScanPath(db, userId, folderId);
+        if (syncDirectoryPath) {
+            const [existingRows] = await db.execute(
+                folderId
+                    ? `SELECT id, name, original_name, folder_id, size, mime_type, extension, is_image, width, height,
+                              path, created_at, updated_at
+                       FROM file_metadata
+                       WHERE folder_id = ? AND owner_id = ?
+                       ORDER BY name ASC`
+                    : `SELECT id, name, original_name, folder_id, size, mime_type, extension, is_image, width, height,
+                              path, created_at, updated_at
+                       FROM file_metadata
+                       WHERE folder_id IS NULL AND owner_id = ?
+                       ORDER BY name ASC`,
+                folderId ? [folderId, userId] : [userId]
+            );
+
+            await syncFilesystemFilesToMetadata(
+                userId,
+                folderId || null,
+                existingRows || [],
+                syncDirectoryPath
+            );
+        }
+    }
+
     let folderQuery = '';
     let folderParams = [];
     if (folderId) {
@@ -302,7 +424,7 @@ async function searchItems(userId, query, folderId = null) {
     );
 
     const [files] = await db.execute(
-        `SELECT id, name, original_name, folder_id, size, mime_type, extension, is_image, created_at
+        `SELECT id, name, original_name, folder_id, size, mime_type, extension, is_image, path, created_at
          FROM file_metadata
          WHERE (name LIKE ? OR original_name LIKE ?)
          AND owner_id = ?
@@ -311,7 +433,193 @@ async function searchItems(userId, query, folderId = null) {
         [searchTerm, searchTerm, userId, ...folderParams]
     );
 
-    return { folders, files };
+    const mergedFiles = await mergeFilesystemSearchResults(db, userId, query, folderId, files || []);
+
+    return { folders, files: mergedFiles };
+}
+
+async function getFolderScanPath(db, userId, folderId = null) {
+    if (folderId) {
+        const [folderRows] = await db.execute(
+            'SELECT path, owner_id FROM folders WHERE id = ?',
+            [folderId]
+        );
+        const folder = folderRows[0];
+        if (folder && folder.path && folder.owner_id === userId) {
+            return folder.path;
+        }
+        return null;
+    }
+
+    const [rootRows] = await db.execute(
+        'SELECT path FROM folders WHERE owner_id = ? AND parent_id IS NULL LIMIT 1',
+        [userId]
+    );
+
+    return rootRows.length > 0 ? rootRows[0].path || null : null;
+}
+
+async function syncFilesystemFilesToMetadata(userId, folderId, existingFiles, directoryPath) {
+    const databaseFiles = Array.isArray(existingFiles) ? existingFiles : [];
+    const normalizedDatabaseFiles = databaseFiles.map((file) => ({
+        ...file,
+        inDatabase: true,
+        source: 'database'
+    }));
+
+    if (!isFilesystemScanEnabled() || !directoryPath) {
+        return normalizedDatabaseFiles;
+    }
+
+    const db = getDatabase();
+    const existingPaths = new Set(
+        normalizedDatabaseFiles
+            .map((file) => path.resolve(file.path || ''))
+            .filter(Boolean)
+    );
+
+    const filesystemFiles = await collectFilesystemFiles(directoryPath, folderId);
+    const insertedFiles = [];
+
+    for (const filesystemFile of filesystemFiles) {
+        const resolvedPath = path.resolve(filesystemFile.path || '');
+        if (!resolvedPath || existingPaths.has(resolvedPath)) {
+            continue;
+        }
+
+        const [matchedRows] = await db.execute(
+            `SELECT id, name, original_name, folder_id, size, mime_type, extension, is_image, width, height,
+                    path, created_at, updated_at
+             FROM file_metadata
+             WHERE owner_id = ? AND path = ?
+             LIMIT 1`,
+            [userId, filesystemFile.path]
+        );
+
+        if (matchedRows.length > 0) {
+            existingPaths.add(resolvedPath);
+            normalizedDatabaseFiles.push({
+                ...matchedRows[0],
+                inDatabase: true,
+                source: 'database'
+            });
+            continue;
+        }
+
+        const [result] = await db.execute(
+            `INSERT INTO file_metadata (name, original_name, folder_id, owner_id, path, size, mime_type, extension, is_image)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+                filesystemFile.name,
+                filesystemFile.original_name,
+                folderId,
+                userId,
+                filesystemFile.path,
+                filesystemFile.size,
+                filesystemFile.mime_type,
+                filesystemFile.extension,
+                filesystemFile.is_image
+            ]
+        );
+
+        const insertedFile = {
+            id: result.insertId,
+            name: filesystemFile.name,
+            original_name: filesystemFile.original_name,
+            folder_id: folderId,
+            size: filesystemFile.size,
+            mime_type: filesystemFile.mime_type,
+            extension: filesystemFile.extension,
+            is_image: filesystemFile.is_image,
+            width: null,
+            height: null,
+            path: filesystemFile.path,
+            created_at: filesystemFile.created_at,
+            updated_at: filesystemFile.updated_at,
+            inDatabase: true,
+            source: 'database'
+        };
+
+        if (filesystemFile.is_image) {
+            updateImageMetadata(filesystemFile.path, insertedFile.id).catch(() => {});
+        }
+
+        insertedFiles.push(insertedFile);
+        existingPaths.add(resolvedPath);
+    }
+
+    return [...normalizedDatabaseFiles, ...insertedFiles].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+async function mergeFilesystemSearchResults(db, userId, query, folderId, files) {
+    const databaseFiles = Array.isArray(files) ? files : [];
+    const normalizedDatabaseFiles = databaseFiles.map((file) => ({
+        ...file,
+        inDatabase: true,
+        source: file?.source || 'database'
+    }));
+
+    if (!isFilesystemScanEnabled()) {
+        return normalizedDatabaseFiles;
+    }
+
+    let scanDirectoryPath = null;
+    if (folderId) {
+        const [folderRows] = await db.execute(
+            'SELECT path, owner_id FROM folders WHERE id = ?',
+            [folderId]
+        );
+        const folder = folderRows[0];
+        if (folder && folder.path && folder.owner_id === userId) {
+            scanDirectoryPath = folder.path;
+        }
+    } else {
+        const [rootRows] = await db.execute(
+            'SELECT path FROM folders WHERE owner_id = ? AND parent_id IS NULL LIMIT 1',
+            [userId]
+        );
+        if (rootRows.length > 0) {
+            scanDirectoryPath = rootRows[0].path || null;
+        }
+    }
+
+    if (!scanDirectoryPath) {
+        return normalizedDatabaseFiles;
+    }
+
+    const existingPaths = new Set(
+        normalizedDatabaseFiles
+            .map((file) => path.resolve(file.path || ''))
+            .filter(Boolean)
+    );
+
+    const loweredQuery = String(query || '').toLowerCase();
+    const filesystemFiles = await collectFilesystemFiles(scanDirectoryPath, folderId || null);
+    const missingDbFiles = filesystemFiles.filter((file) => {
+        const resolvedPath = path.resolve(file.path || '');
+        if (existingPaths.has(resolvedPath)) {
+            return false;
+        }
+
+        const searchableName = `${file.name} ${file.original_name}`.toLowerCase();
+        return searchableName.includes(loweredQuery);
+    });
+
+    if (missingDbFiles.length === 0) {
+        return normalizedDatabaseFiles.sort((a, b) => a.name.localeCompare(b.name));
+    }
+
+    const syncedFiles = await syncFilesystemFilesToMetadata(
+        userId,
+        folderId || null,
+        normalizedDatabaseFiles,
+        scanDirectoryPath
+    );
+
+    return syncedFiles.filter((file) => {
+        const searchableName = `${file.name} ${file.original_name || ''}`.toLowerCase();
+        return searchableName.includes(loweredQuery);
+    });
 }
 
 /**
@@ -340,7 +648,7 @@ async function copyFile(fileId, targetFolderId, userId) {
     const ext = file.extension;
     const baseName = path.basename(file.name, ext);
     const newName = `${Date.now()}_${baseName}${ext}`;
-    const targetPath = safeJoinPath(path.dirname(targetFolder.path), newName);
+    const targetPath = safeJoinPath(targetFolder.path, newName);
 
     // Copy the physical file
     fs.copyFileSync(sourcePath, targetPath);
@@ -392,7 +700,7 @@ async function moveFile(fileId, targetFolderId, userId) {
     const ext = file.extension;
     const baseName = path.basename(file.name, ext);
     const newName = `${Date.now()}_${baseName}${ext}`;
-    const targetPath = safeJoinPath(path.dirname(targetFolder.path), newName);
+    const targetPath = safeJoinPath(targetFolder.path, newName);
 
     // Move the physical file
     fs.renameSync(sourcePath, targetPath);

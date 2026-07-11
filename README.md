@@ -42,6 +42,7 @@ ADMIN_PASSWORD=your-secure-password
 DEFAULT_QUOTA=10737418240
 MAX_FILE_SIZE=2147483648
 ALLOW_FILESYSTEM_SCAN_FOR_MISSING_DB_FILES=false
+PRESERVE_UPLOAD_FILENAME=false
 ```
 
 Then run:
@@ -90,12 +91,30 @@ Behavior:
 
 Recommended behavior for filesystem-only files:
 
-- Mark them with metadata such as `inDatabase: false`
-- Set a source flag such as `source: "filesystem"`
-- Show them in the UI/API response without automatically inserting them into the database
+- Files discovered during listing are shown in the file list even when they do not yet exist in `file_metadata`
+- Files already stored in the database are returned with `inDatabase: true` and `source: "database"`
+- Files found only on disk are returned with `inDatabase: false` and `source: "filesystem"`
 
 This mode is useful when files were copied directly into the storage directory,
 restored from backup, or created outside the normal upload flow.
+
+## Preserve Uploaded Filenames
+
+You can keep the original uploaded filename instead of storing uploads with a generated name.
+
+Add this to your `.env` file:
+
+```env
+PRESERVE_UPLOAD_FILENAME=true
+```
+
+Behavior:
+
+- `false` — Uploaded files keep the generated storage filename
+- `true` — Uploaded files are renamed to a sanitized version of the original filename
+
+If a file with the same name already exists in the target directory, the system
+automatically appends ` (1)`, ` (2)` and so on to avoid overwriting files.
 
 ## Default Credentials
 

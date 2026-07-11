@@ -1,5 +1,7 @@
 const fs = require('fs/promises');
 const path = require('path');
+const mime = require('mime-types');
+const { getExtension, isImage } = require('../utils/helpers');
 
 function isFilesystemScanEnabled() {
     return String(process.env.ALLOW_FILESYSTEM_SCAN_FOR_MISSING_DB_FILES || '').toLowerCase() === 'true';
@@ -45,9 +47,9 @@ async function collectFilesystemFiles(directoryPath, folderId = null) {
             original_name: entry.name,
             folder_id: folderId,
             size: stats.size,
-            mime_type: null,
-            extension: path.extname(entry.name),
-            is_image: null,
+            mime_type: mime.lookup(entry.name) || 'application/octet-stream',
+            extension: getExtension(entry.name),
+            is_image: isImage(entry.name) ? 1 : 0,
             width: null,
             height: null,
             path: fullPath,

@@ -1,5 +1,13 @@
 const { getDatabase } = require('../db/database');
-const { getDirectorySize } = require('../utils/helpers');
+
+/**
+ * Quota accounting is the single source of truth for a user's storage usage.
+ *
+ * `used_bytes` is maintained as a counter that is adjusted incrementally on
+ * managed writes (O(1)) and re-derived from the database on reconciliation
+ * (no filesystem walk). Files created outside the application are folded into
+ * this counter by the file watcher and the daily reconcile job.
+ */
 
 /**
  * Get user's quota info.
@@ -25,13 +33,59 @@ async function getQuotaInfo(userId) {
 }
 
 /**
- * Recalculate user's used storage.
+ * Check if user has enough quota for the given file size.
+ *
+ * @param {number} userId - User ID
+ * @param {number} additionalBytes - Bytes to add
+ * @returns {Promise<boolean>} True if user has enough quota
+ */
+async function checkQuota(userId, additionalBytes) {
+    const db = getDatabase();
+    const [rows] = await db.execute(
+        'SELECT quota_bytes, used_bytes FROM users WHERE id = ?',
+        [userId]
+    );
+    const user = rows[0];
+    if (!user) return false;
+    return (user.used_bytes + additionalBytes) <= user.quota_bytes;
+}
+
+/**
+ * Adjust a user's used storage by a delta (O(1)).
+ * The update is executed in SQL so concurrent adjustments cannot lose writes.
+ *
+ * @param {number} userId - User ID
+ * @param {number} deltaBytes - Signed byte delta (positive to add, negative to subtract)
+ * @returns {Promise<void>}
+ */
+async function adjustUsedStorage(userId, deltaBytes) {
+    const delta = Math.trunc(Number(deltaBytes) || 0);
+    if (!userId || delta === 0) return;
+
+    const db = getDatabase();
+    await db.execute(
+        'UPDATE users SET used_bytes = GREATEST(0, used_bytes + ?) WHERE id = ?',
+        [delta, userId]
+    );
+}
+
+/**
+ * Recalculate a user's used storage from file metadata (indexed aggregate).
+ * Used as the authoritative reconcile step and as the safe fallback after
+ * bulk operations. Does not touch the filesystem.
  *
  * @param {number} userId - User ID
  * @returns {Promise<number>} Used storage in bytes
  */
 async function recalculateStorage(userId) {
-    return updateUsedStorage(userId);
+    const db = getDatabase();
+    const [rows] = await db.execute(
+        'SELECT COALESCE(SUM(size), 0) AS used FROM file_metadata WHERE owner_id = ?',
+        [userId]
+    );
+    const used = Number(rows[0]?.used || 0);
+    await db.execute('UPDATE users SET used_bytes = ? WHERE id = ?', [used, userId]);
+    return used;
 }
 
 /**
@@ -50,30 +104,14 @@ async function setQuota(userId, quotaBytes) {
     return getQuotaInfo(userId);
 }
 
-/**
- * Update user's used storage by scanning the filesystem.
- *
- * @param {number} userId - User ID
- * @returns {Promise<number>} Used storage in bytes
- */
-async function updateUsedStorage(userId) {
-    const db = getDatabase();
-    const [rows] = await db.execute(
-        'SELECT path FROM folders WHERE owner_id = ? AND parent_id IS NULL',
-        [userId]
-    );
-    const folder = rows[0];
-    if (!folder) {
-        await db.execute('UPDATE users SET used_bytes = 0 WHERE id = ?', [userId]);
-        return 0;
-    }
-    const size = getDirectorySize(folder.path);
-    await db.execute('UPDATE users SET used_bytes = ? WHERE id = ?', [size, userId]);
-    return size;
-}
+// Backward-compatible alias — callers previously triggered a full filesystem
+// walk here; it now reconciles from the database instead.
+const updateUsedStorage = recalculateStorage;
 
 module.exports = {
     getQuotaInfo,
+    checkQuota,
+    adjustUsedStorage,
     recalculateStorage,
     setQuota,
     updateUsedStorage

@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS file_metadata (
     mime_type VARCHAR(255),
     extension VARCHAR(20),
     is_image TINYINT(1) NOT NULL DEFAULT 0,
+    mtime DATETIME NULL,
     width INT,
     height INT,
     exif_data LONGTEXT,

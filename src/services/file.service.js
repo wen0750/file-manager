@@ -10,10 +10,9 @@ const {
     safeJoinPath,
     getExtension,
     isImage,
-    getDirectorySize,
     formatBytes
 } = require('../utils/helpers');
-const { updateUsedStorage } = require('../middleware/quota');
+const { adjustUsedStorage } = require('../middleware/quota');
 const {
     collectFilesystemFiles,
     isFilesystemScanEnabled,
@@ -150,9 +149,16 @@ async function saveFileMetadata(file, folderId, userId) {
     const ext = getExtension(file.originalname);
     const imageCheck = isImage(file.originalname);
 
+    let mtime = null;
+    try {
+        mtime = fs.statSync(storedFilePath).mtime;
+    } catch (e) {
+        mtime = null;
+    }
+
     const [result] = await db.execute(
-        `INSERT INTO file_metadata (name, original_name, folder_id, owner_id, path, size, mime_type, extension, is_image)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO file_metadata (name, original_name, folder_id, owner_id, path, size, mime_type, extension, is_image, mtime)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
             storedFileName,
             normalizedOriginalName,
@@ -162,7 +168,8 @@ async function saveFileMetadata(file, folderId, userId) {
             file.size,
             file.mimetype || mime.lookup(normalizedOriginalName) || 'application/octet-stream',
             ext,
-            imageCheck ? 1 : 0
+            imageCheck ? 1 : 0,
+            mtime
         ]
     );
 
@@ -173,8 +180,8 @@ async function saveFileMetadata(file, folderId, userId) {
         updateImageMetadata(storedFilePath, fileId).catch(() => {});
     }
 
-    // Update user storage
-    await updateUsedStorage(userId);
+    // Incremental storage accounting (O(1))
+    await adjustUsedStorage(userId, file.size);
 
     return fileId;
 }
@@ -597,8 +604,8 @@ async function syncFilesystemFilesToMetadata(userId, folderId, existingFiles, di
         }
 
         const [result] = await db.execute(
-            `INSERT INTO file_metadata (name, original_name, folder_id, owner_id, path, size, mime_type, extension, is_image)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO file_metadata (name, original_name, folder_id, owner_id, path, size, mime_type, extension, is_image, mtime)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
                 filesystemFile.name,
                 filesystemFile.original_name,
@@ -608,9 +615,12 @@ async function syncFilesystemFilesToMetadata(userId, folderId, existingFiles, di
                 filesystemFile.size,
                 filesystemFile.mime_type,
                 filesystemFile.extension,
-                filesystemFile.is_image
+                filesystemFile.is_image,
+                filesystemFile.updated_at || null
             ]
         );
+
+        await adjustUsedStorage(userId, filesystemFile.size);
 
         const insertedFile = {
             id: result.insertId,
@@ -746,8 +756,8 @@ async function copyFile(fileId, targetFolderId, userId) {
 
     // Insert new file metadata
     const [result] = await db.execute(
-        `INSERT INTO file_metadata (name, original_name, folder_id, owner_id, path, size, mime_type, extension, is_image)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO file_metadata (name, original_name, folder_id, owner_id, path, size, mime_type, extension, is_image, mtime)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
             newName,
             file.original_name,
@@ -757,11 +767,12 @@ async function copyFile(fileId, targetFolderId, userId) {
             stat.size,
             file.mime_type,
             file.extension,
-            file.is_image
+            file.is_image,
+            stat.mtime
         ]
     );
 
-    await updateUsedStorage(userId);
+    await adjustUsedStorage(userId, stat.size);
     return result.insertId;
 }
 
@@ -827,7 +838,7 @@ async function deleteFile(fileId, userId) {
 
     // Delete metadata
     await db.execute('DELETE FROM file_metadata WHERE id = ?', [fileId]);
-    await updateUsedStorage(userId);
+    await adjustUsedStorage(userId, -Number(file.size));
     return true;
 }
 
@@ -911,11 +922,11 @@ async function updateFileContent(fileId, content, userId) {
 
     const stat = fs.statSync(file.path);
     await db.execute(
-        `UPDATE file_metadata SET size = ?, updated_at = NOW() WHERE id = ?`,
-        [stat.size, fileId]
+        `UPDATE file_metadata SET size = ?, mtime = ?, updated_at = NOW() WHERE id = ?`,
+        [stat.size, stat.mtime, fileId]
     );
 
-    await updateUsedStorage(userId);
+    await adjustUsedStorage(userId, stat.size - Number(file.size));
     return true;
 }
 

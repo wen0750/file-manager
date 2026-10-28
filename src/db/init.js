@@ -81,6 +81,37 @@ async function executeSchemaStatements(connection, sql) {
     }
 }
 
+/**
+ * Idempotently add columns that were introduced after the initial release.
+ * CREATE TABLE IF NOT EXISTS does not alter existing tables, so existing
+ * databases need an explicit migration step.
+ *
+ * @param {import('mysql2/promise').Connection} connection
+ * @param {string} databaseName
+ */
+async function ensureSchemaColumns(connection, databaseName) {
+    const migrations = [
+        {
+            table: 'file_metadata',
+            column: 'mtime',
+            definition: 'ADD COLUMN mtime DATETIME NULL'
+        }
+    ];
+
+    for (const migration of migrations) {
+        const [cols] = await connection.query(
+            `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+            [databaseName, migration.table, migration.column]
+        );
+
+        if (cols.length === 0) {
+            await connection.query(`ALTER TABLE ${migration.table} ${migration.definition}`);
+            console.log(`Applied migration: ${migration.table}.${migration.column}`);
+        }
+    }
+}
+
 async function ensureAdminUser(connection, options = {}) {
     const autoCreateAdmin = parseBoolean(
         getEnv('AUTO_CREATE_ADMIN'),
@@ -176,6 +207,7 @@ async function initDatabase(options = {}) {
         const { config: dbConfig } = buildConfig(true);
         dbConnection = await mysql.createConnection(dbConfig);
         await executeSchemaStatements(dbConnection, schema);
+        await ensureSchemaColumns(dbConnection, databaseName);
         await ensureAdminUser(dbConnection, {
             forceCreate: options.forceAdminCreation === true
         });
